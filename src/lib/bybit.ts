@@ -1,59 +1,55 @@
-const BASE = 'https://api.bybit.com';
-
-const HEADERS = {
-  'Accept': 'application/json',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Referer': 'https://www.bybit.com',
-  'Origin': 'https://www.bybit.com',
-};
+const BASE = 'https://fapi.binance.com';
 
 export interface RawCandle {
   time: number; open: number; high: number; low: number; close: number; volume: number;
 }
 
-async function bybitFetch(url: string): Promise<Record<string, unknown>> {
-  const res = await fetch(url, { cache: 'no-store', headers: HEADERS });
-  if (!res.ok) throw new Error(`Bybit HTTP ${res.status} — ${url}`);
+async function bFetch(url: string): Promise<unknown> {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Binance HTTP ${res.status} — ${url}`);
   const text = await res.text();
-  try { return JSON.parse(text); } catch { throw new Error(`Bybit bad JSON: ${text.slice(0, 120)}`); }
+  try { return JSON.parse(text); } catch { throw new Error(`Binance bad JSON: ${text.slice(0, 120)}`); }
 }
 
+// Binance interval map
+const IV: Record<string, string> = {
+  '1': '1m', '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d', 'W': '1w',
+  '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d',
+};
+
 export async function fetchKlines(symbol: string, interval: string, limit = 200): Promise<RawCandle[]> {
-  const url = `${BASE}/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
-  const json = await bybitFetch(url);
-  if (json.retCode !== 0) throw new Error(`Bybit kline error: ${json.retMsg}`);
-  const list = (json.result as Record<string, unknown>)?.list as string[][];
-  if (!list) return [];
-  return list
-    .map(([t, o, h, l, c, v]) => ({
-      time: Number(t), open: +o, high: +h, low: +l, close: +c, volume: +v,
-    }))
-    .sort((a, b) => a.time - b.time);
+  const iv = IV[interval] ?? interval;
+  const url = `${BASE}/fapi/v1/klines?symbol=${symbol}&interval=${iv}&limit=${limit}`;
+  const data = await bFetch(url) as unknown[][];
+  return data.map((c) => ({
+    time:   Number(c[0]),
+    open:   parseFloat(c[1] as string),
+    high:   parseFloat(c[2] as string),
+    low:    parseFloat(c[3] as string),
+    close:  parseFloat(c[4] as string),
+    volume: parseFloat(c[5] as string),
+  }));
 }
 
 export async function fetchTicker(symbol: string): Promise<{ price: number; change24h: number; volume24h: number }> {
-  const url = `${BASE}/v5/market/tickers?category=linear&symbol=${symbol}`;
-  const json = await bybitFetch(url);
-  const list = (json.result as Record<string, unknown[]>)?.list;
-  const t = list?.[0] as Record<string, string> | undefined;
-  if (!t) throw new Error(`No ticker for ${symbol}`);
+  const url = `${BASE}/fapi/v1/ticker/24hr?symbol=${symbol}`;
+  const t = await bFetch(url) as Record<string, string>;
   return {
-    price: parseFloat(t.lastPrice),
-    change24h: parseFloat(t.price24hPcnt) * 100,
-    volume24h: parseFloat(t.turnover24h),
+    price:     parseFloat(t.lastPrice),
+    change24h: parseFloat(t.priceChangePercent),
+    volume24h: parseFloat(t.quoteVolume),
   };
 }
 
 export async function fetchAllTickers(): Promise<{ symbol: string; price: number; change24h: number; volume24h: number }[]> {
-  const url = `${BASE}/v5/market/tickers?category=linear`;
-  const json = await bybitFetch(url);
-  const list = ((json.result as Record<string, unknown>)?.list ?? []) as Record<string, string>[];
-  return list
+  const url = `${BASE}/fapi/v1/ticker/24hr`;
+  const data = await bFetch(url) as Record<string, string>[];
+  return data
     .filter((t) => t.symbol?.endsWith('USDT'))
     .map((t) => ({
-      symbol: t.symbol,
-      price: parseFloat(t.lastPrice),
-      change24h: parseFloat(t.price24hPcnt) * 100,
-      volume24h: parseFloat(t.turnover24h),
+      symbol:    t.symbol,
+      price:     parseFloat(t.lastPrice),
+      change24h: parseFloat(t.priceChangePercent),
+      volume24h: parseFloat(t.quoteVolume),
     }));
 }

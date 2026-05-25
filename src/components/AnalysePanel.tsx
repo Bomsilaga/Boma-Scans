@@ -326,11 +326,6 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack, aiProv
               </div>
             </div>
           )}
-          {aiProvider && !aiApiKey && (
-            <div className="card border border-warning/30 bg-warning/5 text-warning text-xs flex items-center gap-2">
-              ⚠️ No API key set for {aiProvider} — tap 🤖 in the header to add your key for AI analysis.
-            </div>
-          )}
 
           {/* Candlestick chart */}
           {data.candles && data.candles.length > 0 && (

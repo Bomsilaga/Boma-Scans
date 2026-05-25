@@ -2,8 +2,10 @@
 import { useState } from 'react';
 import AnalysePanel from '@/components/AnalysePanel';
 import ScannerPanel from '@/components/ScannerPanel';
+import AISettingsModal from '@/components/AISettingsModal';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { useAutoScan } from '@/hooks/useAutoScan';
+import { useAISettings } from '@/hooks/useAISettings';
 
 type View = 'analyse' | 'scanner';
 
@@ -52,12 +54,16 @@ function NotificationBell() {
 export default function Home() {
   const [view, setView] = useState<View>('scanner');
   const [symbol, setSymbol] = useState('BTCUSDT');
+  const [showAISettings, setShowAISettings] = useState(false);
+  const aiSettings = useAISettings();
   useAutoScan();
 
   function handleSelectSymbol(sym: string) {
     setSymbol(sym);
     setView('analyse');
   }
+
+  const hasAIKey = !!aiSettings.activeKey;
 
   return (
     <div className="min-h-screen bg-background">
@@ -87,6 +93,26 @@ export default function Home() {
                 <span>{item.label}</span>
               </button>
             ))}
+
+            {/* AI Settings button */}
+            <button
+              onClick={() => setShowAISettings(true)}
+              title={hasAIKey ? `AI: ${aiSettings.settings.provider.toUpperCase()} active` : 'Configure AI analysis provider'}
+              style={{
+                fontSize: 16, background: 'transparent', border: 'none', cursor: 'pointer',
+                padding: '4px 6px', borderRadius: 8, position: 'relative',
+                opacity: hasAIKey ? 1 : 0.6,
+              }}
+            >
+              🤖
+              {hasAIKey && (
+                <span style={{
+                  position: 'absolute', top: 2, right: 2, width: 7, height: 7,
+                  borderRadius: '50%', background: '#00d4aa', border: '1px solid #0a0a0f',
+                }} />
+              )}
+            </button>
+
             <NotificationBell />
           </nav>
         </div>
@@ -94,12 +120,30 @@ export default function Home() {
 
       <main className="max-w-screen-2xl mx-auto px-4 py-4">
         {view === 'analyse' && (
-          <AnalysePanel initialSymbol={symbol} onBack={() => setView('scanner')} />
+          <AnalysePanel
+            initialSymbol={symbol}
+            onBack={() => setView('scanner')}
+            aiProvider={aiSettings.settings.provider}
+            aiApiKey={aiSettings.activeKey}
+          />
         )}
         {view === 'scanner' && (
-          <ScannerPanel onSelect={handleSelectSymbol} />
+          <ScannerPanel
+            onSelect={handleSelectSymbol}
+            aiProvider={aiSettings.settings.provider}
+            aiApiKey={aiSettings.activeKey}
+          />
         )}
       </main>
+
+      {showAISettings && (
+        <AISettingsModal
+          settings={aiSettings.settings}
+          onSetProvider={aiSettings.setProvider}
+          onSetKey={aiSettings.setKey}
+          onClose={() => setShowAISettings(false)}
+        />
+      )}
     </div>
   );
 }

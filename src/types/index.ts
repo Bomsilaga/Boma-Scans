@@ -2,6 +2,7 @@ export type Direction = 'LONG' | 'SHORT' | 'NEUTRAL';
 export type Tier = 'A+' | 'A' | 'B' | 'C' | 'WATCH';
 export type SetupStyle = 'SCALP' | 'INTRADAY' | 'SWING';
 export type AlignmentQuality = 'EXCELLENT' | 'STRONG' | 'MODERATE' | 'POOR';
+export type AIProvider = 'claude' | 'openai' | 'deepseek';
 
 export interface Candle {
   time: number;
@@ -128,4 +129,5 @@ export interface AnalyseResponse {
   swingSignal: StyleSignal;
   deep: DeepAnalysis;
   candles: Candle[];
+  aiAnalysis?: string;
 }

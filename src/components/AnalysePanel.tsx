@@ -106,9 +106,14 @@ function StyleCard({ data, style, onSignal }: {
   );
 }
 
-interface Props { initialSymbol?: string; onBack?: () => void }
+interface Props {
+  initialSymbol?: string;
+  onBack?: () => void;
+  aiProvider?: string;
+  aiApiKey?: string;
+}
 
-export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack }: Props) {
+export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack, aiProvider, aiApiKey }: Props) {
   const [input, setInput] = useState(initialSymbol);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyseResponse | null>(null);
@@ -129,7 +134,7 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack }: Prop
       const res = await fetch('/api/analyse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: target }),
+        body: JSON.stringify({ symbol: target, aiProvider, aiApiKey }),
       });
       if (!res.ok) throw new Error(await res.text());
       const json: AnalyseResponse = await res.json();
@@ -297,6 +302,33 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack }: Prop
                 </span>
               </div>
               <pre className="text-[11px] font-mono text-text-secondary whitespace-pre-wrap leading-relaxed">{data.verdict}</pre>
+            </div>
+          )}
+
+          {/* AI Deep Analysis */}
+          {data.aiAnalysis && (
+            <div className="card border border-accent/30 bg-accent/5 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🤖</span>
+                <h3 className="text-sm font-bold text-accent">AI Deep Analysis</h3>
+                <span className="text-[10px] bg-accent/10 text-accent px-2 py-0.5 rounded-full font-semibold ml-auto">
+                  {aiProvider?.toUpperCase()}
+                </span>
+                <button
+                  onClick={() => navigator.clipboard.writeText(data.aiAnalysis ?? '')}
+                  className="text-[10px] px-2 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/20"
+                >
+                  📋 Copy
+                </button>
+              </div>
+              <div className="text-[11px] font-mono text-text-secondary whitespace-pre-wrap leading-relaxed bg-muted/20 rounded-lg p-3 max-h-[60vh] overflow-y-auto">
+                {data.aiAnalysis}
+              </div>
+            </div>
+          )}
+          {aiProvider && !aiApiKey && (
+            <div className="card border border-warning/30 bg-warning/5 text-warning text-xs flex items-center gap-2">
+              ⚠️ No API key set for {aiProvider} — tap 🤖 in the header to add your key for AI analysis.
             </div>
           )}
 

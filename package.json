@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
     "@auth/prisma-adapter": "^2.11.2",
     "@capacitor/android": "^8.3.4",
     "@capacitor/cli": "^8.3.4",
@@ -17,6 +18,7 @@
     "ccxt": "^4.5.54",
     "next": "16.2.6",
     "next-auth": "^4.24.14",
+    "openai": "^6.39.0",
     "prisma": "^7.8.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

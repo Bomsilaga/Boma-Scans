@@ -6,7 +6,8 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    const { symbol } = await req.json();
+    const body = await req.text();
+    const { symbol } = body ? JSON.parse(body) : {};
     if (!symbol) return NextResponse.json({ error: 'symbol required' }, { status: 400 });
 
     const sym = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;

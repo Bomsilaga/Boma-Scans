@@ -3,73 +3,57 @@ name: Build Android APK
 on:
   push:
     branches: [master]
-  workflow_dispatch:   # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # ── Checkout ────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # ── Java 17 (required by Android Gradle) ───────────────────────────────
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # ── Node (for Capacitor CLI) ────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
-      # ── Android SDK ─────────────────────────────────────────────────────────
-      - uses: android-actions/setup-android@v3
-
-      # ── Install JS deps ─────────────────────────────────────────────────────
-      - name: Install dependencies
+      - name: Install JS dependencies
         run: npm ci
 
-      # ── Capacitor config → android assets ───────────────────────────────────
-      # We use server.url (Vercel) so no Next.js build is needed.
-      # `cap sync` copies capacitor.config.json into the android project.
-      - name: Capacitor sync (remote URL mode)
-        run: |
-          npx cap sync android --no-build
+      - name: Install Capacitor CLI
+        run: npm install -g @capacitor/cli
 
-      # ── Gradle build ────────────────────────────────────────────────────────
+      - name: Accept Android SDK licences
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Install Android build tools
+        run: |
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;34.0.0"
+
+      - name: Capacitor sync (remote-URL mode — no Next.js build needed)
+        run: npx cap sync android --no-build
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      # Debug APK — works without a keystore, installable on any device
-      # with "Install unknown apps" enabled (or via adb).
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
 
-      # ── Upload APK as artifact ──────────────────────────────────────────────
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: 4scans-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
-
-      # ── (Optional) Release APK — uncomment and add secrets to enable ────────
-      # - name: Build release APK
-      #   working-directory: android
-      #   env:
-      #     KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-      #     KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      #     KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-      #     STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-      #   run: |
-      #     echo "$KEYSTORE_B64" | base64 -d > release.jks
-      #     ./gradlew assembleRelease \
-      #       -Pandroid.injected.signing.store.file=$(pwd)/release.jks \
-      #       -Pandroid.injected.signing.store.password=$STORE_PASSWORD \
-      #       -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
-      #       -Pandroid.injected.signing.key.password=$KEY_PASSWORD \
-      #       --no-daemon

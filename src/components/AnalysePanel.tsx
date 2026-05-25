@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import type { AnalyseResponse, SetupStyle } from '@/types';
+import CandleChart from './CandleChart';
 
 type SignalStyle = 'MASTER' | 'SCALP' | 'INTRADAY' | 'SWING';
 
@@ -22,10 +23,9 @@ function AlignBar({ score }: { score: number }) {
   );
 }
 
-function StyleCard({ data, style, symbol, onSignal }: {
+function StyleCard({ data, style, onSignal }: {
   data: AnalyseResponse;
   style: SetupStyle;
-  symbol: string;
   onSignal: (text: string, style: SignalStyle) => void;
 }) {
   const sigMap: Record<SetupStyle, AnalyseResponse['scalpSignal']> = {
@@ -74,12 +74,16 @@ function StyleCard({ data, style, symbol, onSignal }: {
       </div>
 
       {/* Leverage options */}
-      <div className="flex gap-1 flex-wrap mb-3">
-        {sig.leverageOptions.map((lev) => (
-          <span key={lev} className={`text-[10px] px-1.5 py-0.5 rounded mono font-semibold ${lev === sig.leverage ? 'bg-accent text-white' : 'bg-muted text-text-muted'}`}>
-            {lev}x
-          </span>
-        ))}
+      <div className="mb-1">
+        <div className="text-[9px] text-text-muted mb-1">⚡ Leverage · TA/FA derived</div>
+        <div className="flex gap-1 flex-wrap mb-1">
+          {sig.leverageOptions.map((lev) => (
+            <span key={lev} className={`text-[10px] px-1.5 py-0.5 rounded mono font-semibold ${lev === sig.leverage ? 'bg-accent text-white' : 'bg-muted text-text-muted'}`}>
+              {lev}x
+            </span>
+          ))}
+        </div>
+        <div className="text-[9px] text-text-muted italic">{sig.leverageReasoning}</div>
       </div>
 
       {/* Generate signal */}
@@ -96,7 +100,6 @@ function StyleCard({ data, style, symbol, onSignal }: {
 interface Props { initialSymbol?: string }
 
 export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
-  const [symbol, setSymbol] = useState(initialSymbol);
   const [input, setInput] = useState(initialSymbol);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyseResponse | null>(null);
@@ -122,7 +125,6 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
       if (!res.ok) throw new Error(await res.text());
       const json: AnalyseResponse = await res.json();
       setData(json);
-      setSymbol(target);
       setActiveStyle(json.bestSetup);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Analysis failed');
@@ -253,6 +255,20 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
             </div>
           </div>
 
+          {/* Candlestick chart */}
+          {data.candles && data.candles.length > 0 && (
+            <CandleChart
+              candles={data.candles}
+              entry={data.intradaySignal.entry}
+              stopLoss={data.intradaySignal.stopLoss}
+              tp1={data.intradaySignal.tp1}
+              tp2={data.intradaySignal.tp2}
+              tp3={data.intradaySignal.tp3}
+              direction={data.direction}
+              poc={data.deep.poc}
+            />
+          )}
+
           {/* Master signal */}
           <div className="card border border-accent/20 bg-accent/5">
             <div className="flex items-center justify-between mb-2">
@@ -292,7 +308,6 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
           <StyleCard
             data={data}
             style={activeStyle}
-            symbol={data.symbol}
             onSignal={(text, style) => setSignalOut({ text, style })}
           />
 

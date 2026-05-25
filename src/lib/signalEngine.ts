@@ -1,7 +1,7 @@
 import type { RawCandle } from './bybit';
 import type { Direction, SetupStyle, StyleSignal, DeepAnalysis, AlignmentQuality } from '@/types';
 import {
-  ema, rsi, atr, macd, bollingerBands, vwap, poc, volRatio,
+  rsi, atr, macd, bollingerBands, vwap, poc, volRatio,
   swingHighLow, fibLevels, wyckoffPhase, oteZone,
   detectBOS, detectOB, detectFVG, detectChoCH, detectLiquiditySweep,
   trendLabel, alignmentScore,
@@ -9,25 +9,70 @@ import {
 
 const FEE_PCT = 0.22; // 4 fills × 0.055% taker
 
+// ── TA/FA-driven leverage calculator ─────────────────────────────────────────
+// Leverage is NOT a simple index — it is derived from:
+//   1. Volatility   — high ATR% = lower leverage (market is moving fast)
+//   2. Alignment    — more TFs aligned = higher leverage confidence
+//   3. Structure    — BOS + OB + sweep = more confirmation = higher
+//   4. RSI extreme  — overbought/oversold = reduce leverage (reversal risk)
+//   5. Style cap    — each style has a hard max (SCALP 50x, INTRADAY 20x, SWING 10x)
+function calcLeverage(
+  style: SetupStyle,
+  atrPct: number,         // ATR as % of price
+  align: number,          // 0–100
+  score: number,          // 0–100
+  rsiVal: number,
+  hasBOS: boolean,
+  hasOB: boolean,
+  hasSweep: boolean,
+): { leverage: number; leverageOptions: number[]; reasoning: string } {
+  const caps = { SCALP: 50, INTRADAY: 20, SWING: 10 };
+  const floors = { SCALP: 5, INTRADAY: 3, SWING: 2 };
+  const cap = caps[style];
+  const floor = floors[style];
+
+  // Base = mid-range for style
+  let base = { SCALP: 20, INTRADAY: 10, SWING: 5 }[style];
+  const reasons: string[] = [];
+
+  // 1. Volatility penalty — high ATR = reduce leverage
+  if (atrPct > 0.04)       { base = Math.round(base * 0.4); reasons.push('high volatility (−60%)'); }
+  else if (atrPct > 0.025) { base = Math.round(base * 0.6); reasons.push('elevated volatility (−40%)'); }
+  else if (atrPct > 0.015) { base = Math.round(base * 0.8); reasons.push('moderate volatility (−20%)'); }
+  else if (atrPct < 0.005) { base = Math.round(base * 1.3); reasons.push('low volatility (+30%)'); }
+
+  // 2. Alignment bonus
+  if (align >= 85)      { base = Math.round(base * 1.25); reasons.push('excellent alignment (+25%)'); }
+  else if (align >= 70) { base = Math.round(base * 1.10); reasons.push('strong alignment (+10%)'); }
+  else if (align < 55)  { base = Math.round(base * 0.75); reasons.push('weak alignment (−25%)'); }
+
+  // 3. Structure confirmation bonus
+  const structs = [hasBOS, hasOB, hasSweep].filter(Boolean).length;
+  if (structs === 3)      { base = Math.round(base * 1.20); reasons.push('full structure (BOS+OB+Sweep +20%)'); }
+  else if (structs === 2) { base = Math.round(base * 1.10); reasons.push('good structure (+10%)'); }
+  else if (structs === 0) { base = Math.round(base * 0.80); reasons.push('no structure (−20%)'); }
+
+  // 4. Score bonus
+  if (score >= 80)      { base = Math.round(base * 1.15); reasons.push('high score (+15%)'); }
+  else if (score < 60)  { base = Math.round(base * 0.85); reasons.push('low score (−15%)'); }
+
+  // 5. RSI extreme penalty
+  if (rsiVal > 75 || rsiVal < 25) { base = Math.round(base * 0.70); reasons.push('RSI extreme (−30%)'); }
+  else if (rsiVal > 68 || rsiVal < 32) { base = Math.round(base * 0.85); reasons.push('RSI stretched (−15%)'); }
+
+  const leverage = Math.max(floor, Math.min(cap, base));
+
+  // Build options: floor, ×0.6, recommended, ×1.3, cap — deduplicated, sorted
+  const raw = [floor, Math.round(leverage * 0.6), leverage, Math.round(leverage * 1.3), cap];
+  const leverageOptions = [...new Set(raw.map(v => Math.max(floor, Math.min(cap, v))))].sort((a, b) => a - b);
+
+  return { leverage, leverageOptions, reasoning: reasons.join(' · ') || 'baseline' };
+}
+
 const STYLE_CFG = {
-  SCALP: {
-    slMult: 1.3,
-    tpPcts: [0.45, 0.9, 1.48],
-    leverages: [20, 30, 50, 75, 100],
-    label: 'SCALP',
-  },
-  INTRADAY: {
-    slMult: 2.5,
-    tpPcts: [2.27, 3.79, 5.96],
-    leverages: [10, 15, 20, 25, 30],
-    label: 'INTRADAY',
-  },
-  SWING: {
-    slMult: 5.0,
-    tpPcts: [5.0, 11.9, 20.1, 29.2],
-    leverages: [5, 7, 10, 15, 20],
-    label: 'SWING',
-  },
+  SCALP:    { slMult: 1.3, tpPcts: [0.45, 0.9,  1.48]              },
+  INTRADAY: { slMult: 2.5, tpPcts: [2.27, 3.79,  5.96]             },
+  SWING:    { slMult: 5.0, tpPcts: [5.0,  11.9, 20.1, 29.2]        },
 } as const;
 
 export function buildSignalText(
@@ -45,20 +90,19 @@ export function buildSignalText(
   const isLong = direction === 'LONG';
   const dirEmoji = isLong ? '🟢' : '🔴';
   const alignBar = '█'.repeat(Math.round(alignScore / 10)) + '░'.repeat(10 - Math.round(alignScore / 10));
-  const slPct = (Math.abs(sig.entry - sig.stopLoss) / sig.entry * 100).toFixed(3);
-  const tp1Pct = (Math.abs(sig.tp1 - sig.entry) / sig.entry * 100).toFixed(3);
-  const tp2Pct = (Math.abs(sig.tp2 - sig.entry) / sig.entry * 100).toFixed(3);
-  const tp3Pct = (Math.abs(sig.tp3 - sig.entry) / sig.entry * 100).toFixed(3);
+  const slPct  = (Math.abs(sig.entry - sig.stopLoss) / sig.entry * 100).toFixed(3);
+  const tp1Pct = (Math.abs(sig.tp1  - sig.entry) / sig.entry * 100).toFixed(3);
+  const tp2Pct = (Math.abs(sig.tp2  - sig.entry) / sig.entry * 100).toFixed(3);
+  const tp3Pct = (Math.abs(sig.tp3  - sig.entry) / sig.entry * 100).toFixed(3);
   const tp4Pct = sig.tp4 ? (Math.abs(sig.tp4 - sig.entry) / sig.entry * 100).toFixed(3) : null;
 
   const tfRow = Object.entries(trendMap)
     .map(([tf, t]) => {
       const ok = (isLong && t.includes('UP')) || (!isLong && t.includes('DOWN'));
       return `  ${tf.padEnd(4)} ${ok ? '✅' : '⚠️'} ${t}`;
-    })
-    .join('\n');
+    }).join('\n');
 
-  const lines = [
+  return [
     `🚀 4SCANS SIGNAL [${style}]`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
     `📌 ${symbol} PERP — ${dirEmoji} ${direction}`,
@@ -71,7 +115,7 @@ export function buildSignalText(
     `📈 TIMEFRAME TRENDS:`,
     tfRow,
     ``,
-    `📥 ENTRY:    $${sig.entry.toFixed(5)}  [${sig.entryTiming}]`,
+    `📥 ENTRY:    $${sig.entry.toFixed(5)}  [${sig.entryTiming.replace(/_/g, ' ')}]`,
     `🛑 STOP:     $${sig.stopLoss.toFixed(5)}  (−${slPct}%)`,
     `🎯 TP1:      $${sig.tp1.toFixed(5)}  (+${tp1Pct}%)`,
     `🎯 TP2:      $${sig.tp2.toFixed(5)}  (+${tp2Pct}%)`,
@@ -80,7 +124,8 @@ export function buildSignalText(
     ``,
     `📐 Gross R:R: ${sig.grossRR.toFixed(2)}x`,
     `💸 Net R:R:   ${sig.netRR.toFixed(2)}x  (after ${FEE_PCT}% fees)`,
-    `⚡ Leverage:  ${sig.leverage}x`,
+    `⚡ Leverage:  ${sig.leverage}x  ← TA/FA derived`,
+    `   Basis:     ${sig.leverageReasoning}`,
     `   Options:   ${sig.leverageOptions.join('x / ')}x`,
     ``,
     `🔍 STRUCTURE:`,
@@ -98,10 +143,7 @@ export function buildSignalText(
     `🎯 ICT AMD:  ${deep.amdBias}`,
     deep.oteZone ? `📐 OTE Zone: $${deep.oteZone.low.toFixed(5)} – $${deep.oteZone.high.toFixed(5)}` : null,
     `📊 Vol POC:  $${deep.poc.toFixed(5)}`,
-    `📚 OB Imbal: ${deep.orderbookImbalance}`,
-  ].filter(Boolean) as string[];
-
-  return lines.join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export interface EngineResult {
@@ -117,6 +159,7 @@ export interface EngineResult {
   intradaySignal: StyleSignal;
   swingSignal: StyleSignal;
   deep: DeepAnalysis;
+  candles: RawCandle[];   // 1h candles for chart
 }
 
 export function runEngine(
@@ -141,33 +184,33 @@ export function runEngine(
   const alignQuality: AlignmentQuality =
     align >= 85 ? 'EXCELLENT' : align >= 70 ? 'STRONG' : align >= 55 ? 'MODERATE' : 'POOR';
 
-  // Use 1h candles for deep analysis
-  const h1 = candleMap['1h'] ?? candleMap['15m'] ?? [];
-  const h4 = candleMap['4h'] ?? [];
+  const h1  = candleMap['1h']  ?? candleMap['15m'] ?? [];
+  const h4  = candleMap['4h']  ?? [];
   const closes1h = h1.map((c) => c.close);
-  const rsiVal  = rsi(closes1h);
-  const macdVal = macd(closes1h);
-  const bbVal   = bollingerBands(closes1h);
-  const vwapVal = vwap(h1);
-  const pocVal  = poc(h1);
-  const vrVal   = volRatio(h1);
-  const atrVal  = atr(h1);
+  const rsiVal   = rsi(closes1h);
+  const macdVal  = macd(closes1h);
+  const bbVal    = bollingerBands(closes1h);
+  const vwapVal  = vwap(h1);
+  const pocVal   = poc(h1);
+  const vrVal    = volRatio(h1);
+  const atrVal   = atr(h1);
+  const atrPct   = atrVal / price;
+
   const { high: swHigh, low: swLow } = swingHighLow(h4.length >= 20 ? h4 : h1, 30);
   const ote    = oteZone(swHigh, swLow);
   const fibs   = fibLevels(swHigh, swLow);
   const wyck   = wyckoffPhase(h1);
-  const hasBOS = detectBOS(h1);
-  const hasOB  = direction !== 'NEUTRAL' ? detectOB(h1, direction === 'LONG' ? 'LONG' : 'SHORT') : false;
-  const hasFVG = detectFVG(h1.slice(-10));
+  const hasBOS   = detectBOS(h1);
+  const hasOB    = direction !== 'NEUTRAL' ? detectOB(h1, direction === 'LONG' ? 'LONG' : 'SHORT') : false;
+  const hasFVG   = detectFVG(h1.slice(-10));
   const hasChoCH = detectChoCH(h1);
   const hasSweep = detectLiquiditySweep(h1);
   const macdBull = macdVal.histogram > 0 && macdVal.macdLine > macdVal.signalLine;
   const macdBear = macdVal.histogram < 0 && macdVal.macdLine < macdVal.signalLine;
   const vwapAbove = price > vwapVal;
 
-  // AMD bias from recent price structure
-  const recentH1 = h1.slice(-30);
-  const midIdx = Math.floor(recentH1.length / 2);
+  const recentH1  = h1.slice(-30);
+  const midIdx    = Math.floor(recentH1.length / 2);
   const accumPhase = recentH1.slice(0, midIdx);
   const distPhase  = recentH1.slice(midIdx);
   const accumRange = Math.max(...accumPhase.map(c => c.high)) - Math.min(...accumPhase.map(c => c.low));
@@ -177,23 +220,15 @@ export function runEngine(
                   hasBOS ? 'MANIPULATION' : 'UNCLEAR';
 
   const deep: DeepAnalysis = {
-    wyckoffPhase: wyck,
-    rsi: rsiVal,
-    bbWidth: bbVal.width,
-    volRatio: vrVal,
-    vwapAbove,
-    poc: pocVal,
-    oteZone: ote,
-    amdBias,
-    fibLevels: fibs,
-    hasBOS, hasOB, hasFVG, hasSweep, hasChoCH,
+    wyckoffPhase: wyck, rsi: rsiVal, bbWidth: bbVal.width,
+    volRatio: vrVal, vwapAbove, poc: pocVal, oteZone: ote, amdBias,
+    fibLevels: fibs, hasBOS, hasOB, hasFVG, hasSweep, hasChoCH,
     macdBull, macdBear,
     orderbookImbalance: macdBull ? 'BID_HEAVY' : macdBear ? 'ASK_HEAVY' : 'BALANCED',
   };
 
-  // Composite score (0–100)
   let score = 0;
-  score += Math.round(align * 0.3);                    // 30 pts alignment
+  score += Math.round(align * 0.3);
   if (hasBOS)  score += 15;
   if (hasOB)   score += 12;
   if (hasChoCH) score += 8;
@@ -206,46 +241,44 @@ export function runEngine(
   if (inOTE) score += 4;
   score = Math.min(100, score);
 
-  const confidence = Math.round(
+  const confidence = Math.min(100, Math.round(
     (align * 0.4) +
     ([hasBOS, hasOB, hasFVG, hasChoCH, hasSweep].filter(Boolean).length / 5) * 30 +
     ([macdBull || macdBear, vwapAbove === (direction === 'LONG'), vrVal >= 1.2].filter(Boolean).length / 3) * 30
-  );
+  ));
 
   const bestSetup: SetupStyle =
-    atrVal / price < 0.005 ? 'SCALP' :
-    atrVal / price < 0.015 ? 'INTRADAY' : 'SWING';
+    atrPct < 0.005 ? 'SCALP' : atrPct < 0.015 ? 'INTRADAY' : 'SWING';
 
   function buildStyle(style: SetupStyle): StyleSignal {
     const cfg = STYLE_CFG[style];
     const isLong = direction !== 'SHORT';
-    const sl = isLong
-      ? price - atrVal * cfg.slMult
-      : price + atrVal * cfg.slMult;
+    const sl = isLong ? price - atrVal * cfg.slMult : price + atrVal * cfg.slMult;
     const riskPerUnit = Math.abs(price - sl);
     const tps = cfg.tpPcts.map((pct) =>
       isLong ? price * (1 + pct / 100) : price * (1 - pct / 100)
     );
-    const grossRR = Math.abs(tps[1] - price) / riskPerUnit;
+    const grossRR = riskPerUnit > 0 ? Math.abs(tps[1] - price) / riskPerUnit : 0;
     const feeCost = price * FEE_PCT / 100;
-    const netRR = Math.max(0, (Math.abs(tps[1] - price) - feeCost) / riskPerUnit);
+    const netRR   = Math.max(0, riskPerUnit > 0 ? (Math.abs(tps[1] - price) - feeCost) / riskPerUnit : 0);
+
     const entryTiming: StyleSignal['entryTiming'] = inOTE ? 'READY' :
       (isLong && price > vwapVal) || (!isLong && price < vwapVal) ? 'WAIT_PULLBACK' : 'WAIT_RETEST';
-    const leverage = cfg.leverages[Math.floor(confidence / 25)] ?? cfg.leverages[0];
+
+    // TA/FA leverage
+    const { leverage, leverageOptions, reasoning } = calcLeverage(
+      style, atrPct, align, score, rsiVal, hasBOS, hasOB, hasSweep
+    );
 
     const sig: StyleSignal = {
       style,
       direction: direction === 'NEUTRAL' ? 'LONG' : direction,
       entry: price,
       stopLoss: sl,
-      tp1: tps[0],
-      tp2: tps[1],
-      tp3: tps[2],
-      tp4: tps[3],
-      grossRR,
-      netRR,
-      leverage,
-      leverageOptions: [...cfg.leverages],
+      tp1: tps[0], tp2: tps[1], tp3: tps[2], tp4: tps[3],
+      grossRR, netRR,
+      leverage, leverageOptions,
+      leverageReasoning: reasoning,
       confidence,
       entryTiming,
       signalText: '',
@@ -258,11 +291,10 @@ export function runEngine(
     return sig;
   }
 
-  const scalpSignal   = buildStyle('SCALP');
+  const scalpSignal    = buildStyle('SCALP');
   const intradaySignal = buildStyle('INTRADAY');
-  const swingSignal   = buildStyle('SWING');
+  const swingSignal    = buildStyle('SWING');
 
-  // Master = best-setup style with slightly wider levels
   const masterBase = buildStyle(bestSetup);
   const masterSignal: StyleSignal = {
     ...masterBase,
@@ -286,5 +318,6 @@ export function runEngine(
     intradaySignal,
     swingSignal,
     deep,
+    candles: h1.slice(-100),
   };
 }

@@ -25,6 +25,7 @@ export interface StyleSignal {
   netRR: number;
   leverage: number;
   leverageOptions: number[];
+  leverageReasoning: string;
   confidence: number;
   entryTiming: 'READY' | 'WAIT_PULLBACK' | 'WAIT_RETEST';
   signalText: string;
@@ -101,4 +102,5 @@ export interface AnalyseResponse {
   intradaySignal: StyleSignal;
   swingSignal: StyleSignal;
   deep: DeepAnalysis;
+  candles: Candle[];
 }

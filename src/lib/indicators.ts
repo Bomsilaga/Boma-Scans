@@ -86,10 +86,11 @@ export function poc(candles: RawCandle[], buckets = 50): number {
   return minP + (maxBucket + 0.5) * step;
 }
 
-export function volRatio(candles: RawCandle[], recent = 5, base = 20): number {
-  if (candles.length < base) return 1;
+// Compare recent 5 candles vs 30-candle baseline for a more stable ratio
+export function volRatio(candles: RawCandle[], recent = 5, base = 30): number {
+  if (candles.length < base + recent) return 1;
   const recentVol = candles.slice(-recent).reduce((a, c) => a + c.volume, 0) / recent;
-  const baseVol = candles.slice(-base, -recent).reduce((a, c) => a + c.volume, 0) / (base - recent);
+  const baseVol = candles.slice(-(base + recent), -recent).reduce((a, c) => a + c.volume, 0) / base;
   return baseVol === 0 ? 1 : recentVol / baseVol;
 }
 
@@ -132,24 +133,68 @@ export function wyckoffPhase(candles: RawCandle[]): string {
   return 'MARKDOWN';
 }
 
-export function detectBOS(candles: RawCandle[]): boolean {
-  if (candles.length < 10) return false;
-  const recent = candles.slice(-10);
-  const prev = candles.slice(-20, -10);
-  const prevHigh = Math.max(...prev.map((c) => c.high));
-  const prevLow  = Math.min(...prev.map((c) => c.low));
-  const recentClose = recent[recent.length - 1].close;
-  return recentClose > prevHigh || recentClose < prevLow;
+// Swing point detection: a pivot high is a candle whose high is higher than
+// the N candles on each side. Returns an array of {index, price, type} pivots.
+function pivotPoints(candles: RawCandle[], strength = 3): { index: number; price: number; type: 'HIGH' | 'LOW' }[] {
+  const pivots: { index: number; price: number; type: 'HIGH' | 'LOW' }[] = [];
+  for (let i = strength; i < candles.length - strength; i++) {
+    const c = candles[i];
+    const leftHighs  = candles.slice(i - strength, i).map(x => x.high);
+    const rightHighs = candles.slice(i + 1, i + strength + 1).map(x => x.high);
+    const leftLows   = candles.slice(i - strength, i).map(x => x.low);
+    const rightLows  = candles.slice(i + 1, i + strength + 1).map(x => x.low);
+    if (c.high > Math.max(...leftHighs) && c.high > Math.max(...rightHighs))
+      pivots.push({ index: i, price: c.high, type: 'HIGH' });
+    if (c.low < Math.min(...leftLows) && c.low < Math.min(...rightLows))
+      pivots.push({ index: i, price: c.low, type: 'LOW' });
+  }
+  return pivots;
 }
 
+// BOS: price closes beyond the most recent confirmed swing high (bullish BOS)
+// or swing low (bearish BOS). Requires a CLOSE, not just a wick.
+export function detectBOS(candles: RawCandle[]): boolean {
+  if (candles.length < 20) return false;
+  const pivots = pivotPoints(candles.slice(-40), 3);
+  const highs = pivots.filter(p => p.type === 'HIGH').slice(-3);
+  const lows  = pivots.filter(p => p.type === 'LOW').slice(-3);
+  if (highs.length === 0 && lows.length === 0) return false;
+  const lastClose = candles[candles.length - 1].close;
+  const prevClose = candles[candles.length - 2].close;
+  // Bullish BOS: two consecutive closes above a swing high
+  if (highs.length > 0) {
+    const swHigh = Math.max(...highs.map(h => h.price));
+    if (lastClose > swHigh && prevClose > swHigh) return true;
+  }
+  // Bearish BOS: two consecutive closes below a swing low
+  if (lows.length > 0) {
+    const swLow = Math.min(...lows.map(l => l.price));
+    if (lastClose < swLow && prevClose < swLow) return true;
+  }
+  return false;
+}
+
+// OB: the last bearish (for LONG) or bullish (for SHORT) candle BEFORE the BOS
+// move, ideally with above-average volume. This is the real ICT definition.
 export function detectOB(candles: RawCandle[], direction: 'LONG' | 'SHORT'): boolean {
-  if (candles.length < 5) return false;
-  for (let i = candles.length - 5; i < candles.length - 1; i++) {
-    const c = candles[i];
-    const isBullish = c.close > c.open;
-    const isBearish = c.close < c.open;
-    if (direction === 'LONG' && isBearish) return true;
-    if (direction === 'SHORT' && isBullish) return true;
+  if (candles.length < 10) return false;
+  // Look back up to 20 candles for the impulsive move
+  const window = candles.slice(-20);
+  const atrVal = atr(window);
+  // Find an impulsive candle (body > 1.5× ATR) in the expected direction
+  for (let i = window.length - 1; i >= 3; i--) {
+    const c = window[i];
+    const body = Math.abs(c.close - c.open);
+    if (body < atrVal * 1.0) continue; // not impulsive enough
+    const isImpulsiveLong  = c.close > c.open && direction === 'LONG';
+    const isImpulsiveShort = c.close < c.open && direction === 'SHORT';
+    if (!isImpulsiveLong && !isImpulsiveShort) continue;
+    // The candle BEFORE this impulse is the OB candidate
+    const obCandle = window[i - 1];
+    const obIsBearish = obCandle.close < obCandle.open;
+    const obIsBullish = obCandle.close > obCandle.open;
+    if (direction === 'LONG'  && obIsBearish) return true;
+    if (direction === 'SHORT' && obIsBullish) return true;
   }
   return false;
 }
@@ -180,26 +225,26 @@ export function detectLiquiditySweep(candles: RawCandle[]): boolean {
 
 // ── Sweep types ───────────────────────────────────────────────────────────────
 export type SweepType =
-  | 'BSL_SWEEP'       // Buy-side liquidity swept (equal highs / swing high taken out)
-  | 'SSL_SWEEP'       // Sell-side liquidity swept (equal lows / swing low taken out)
-  | 'INDUCEMENT'      // Minor liquidity grab before major move
-  | 'STOP_HUNT'       // Spike beyond key level then immediate reversal
-  | 'DOUBLE_TOP_SWEEP'// Two consecutive highs swept
-  | 'DOUBLE_BOT_SWEEP';// Two consecutive lows swept
+  | 'BSL_SWEEP'
+  | 'SSL_SWEEP'
+  | 'INDUCEMENT'
+  | 'STOP_HUNT'
+  | 'DOUBLE_TOP_SWEEP'
+  | 'DOUBLE_BOT_SWEEP';
 
 export type SweepStrength = 'STRONG' | 'MODERATE' | 'WEAK';
 
 export interface SweepEvent {
   type: SweepType;
   strength: SweepStrength;
-  score: number;           // 0–100
-  direction: 'LONG' | 'SHORT'; // expected move AFTER sweep
-  sweptLevel: number;      // price level that was swept
-  rejectionClose: number;  // close that confirmed rejection
-  wickSize: number;        // wick beyond level as % of ATR
-  volumeSpike: boolean;    // volume on sweep candle > 1.5× avg
-  confirmed: boolean;      // close back inside range
-  candle: RawCandle;       // the sweep candle
+  score: number;
+  direction: 'LONG' | 'SHORT';
+  sweptLevel: number;
+  rejectionClose: number;
+  wickSize: number;
+  volumeSpike: boolean;
+  confirmed: boolean;
+  candle: RawCandle;
   candleIndex: number;
   description: string;
 }
@@ -209,16 +254,13 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
 
   const events: SweepEvent[] = [];
 
-  // ATR for context
   const trs = candles.slice(1).map((c, i) =>
     Math.max(c.high - c.low, Math.abs(c.high - candles[i].close), Math.abs(c.low - candles[i].close))
   );
   const atrVal = trs.slice(-atrPeriod).reduce((a, b) => a + b, 0) / atrPeriod || 1;
 
-  // Average volume for spike detection
   const avgVol = candles.slice(-lookback - 5, -5).reduce((a, c) => a + c.volume, 0) / lookback;
 
-  // Scan last 10 candles for sweep events
   const scanStart = Math.max(lookback, candles.length - 10);
 
   for (let i = scanStart; i < candles.length; i++) {
@@ -229,9 +271,7 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
     const windowHigh = Math.max(...window.map(w => w.high));
     const windowLow  = Math.min(...window.map(w => w.low));
 
-    // Equal highs / swing high (BSL) — price swept above then closed below
     const bslSweep = c.high > windowHigh && c.close < windowHigh;
-    // Equal lows / swing low (SSL) — price swept below then closed above
     const sslSweep = c.low < windowLow && c.close > windowLow;
 
     if (!bslSweep && !sslSweep) continue;
@@ -241,19 +281,13 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
     const wickBeyond  = isBSL ? c.high - windowHigh : windowLow - c.low;
     const wickPct     = wickBeyond / atrVal;
     const volSpike    = c.volume > avgVol * 1.5;
-    const bodyBack    = isBSL
-      ? c.close < windowHigh   // closed back below swept high
-      : c.close > windowLow;   // closed back above swept low
+    const bodyBack    = isBSL ? c.close < windowHigh : c.close > windowLow;
 
-    // Check next candle for continuation confirmation (if available)
     const nextC = candles[i + 1];
     const followThrough = nextC
       ? (isBSL ? nextC.close < c.close : nextC.close > c.close)
       : false;
 
-    // Detect inducement: wick < 0.3 ATR = minor grab
-    // Detect stop hunt: wick > 1.5 ATR = large spike
-    // Detect double sweep: previous sweep level nearby
     const prevWindow = candles.slice(i - lookback, i - 3);
     const prevHigh2 = prevWindow.length ? Math.max(...prevWindow.map(w => w.high)) : 0;
     const prevLow2  = prevWindow.length ? Math.min(...prevWindow.map(w => w.low)) : Infinity;
@@ -265,14 +299,13 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
     else if (!isBSL && Math.abs(sweptLevel - prevLow2) < atrVal * 0.2) type = 'DOUBLE_BOT_SWEEP';
     else                     type = isBSL ? 'BSL_SWEEP' : 'SSL_SWEEP';
 
-    // Score (0–100)
     let score = 40;
     if (bodyBack)          score += 20;
     if (volSpike)          score += 15;
     if (followThrough)     score += 10;
-    if (wickPct >= 0.5 && wickPct <= 2.0) score += 10; // ideal wick size
+    if (wickPct >= 0.5 && wickPct <= 2.0) score += 10;
     if (type === 'DOUBLE_TOP_SWEEP' || type === 'DOUBLE_BOT_SWEEP') score += 5;
-    if (type === 'STOP_HUNT') score -= 5; // stop hunts can be traps themselves
+    if (type === 'STOP_HUNT') score -= 5;
     score = Math.min(100, score);
 
     const strength: SweepStrength =
@@ -291,7 +324,7 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
       type,
       strength,
       score,
-      direction: isBSL ? 'SHORT' : 'LONG', // after BSL sweep → expect SHORT, after SSL → LONG
+      direction: isBSL ? 'SHORT' : 'LONG',
       sweptLevel,
       rejectionClose: c.close,
       wickSize: parseFloat(wickPct.toFixed(2)),
@@ -309,7 +342,6 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
     });
   }
 
-  // Sort by score desc, deduplicate nearby levels (within 0.5 ATR)
   const sorted = events.sort((a, b) => b.score - a.score);
   const deduped: SweepEvent[] = [];
   for (const ev of sorted) {
@@ -320,7 +352,6 @@ export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14
   return deduped;
 }
 
-// Management strategy: given active sweeps, return trade management advice
 export interface SweepManagement {
   action: 'ENTER' | 'SCALE_IN' | 'TIGHTEN_SL' | 'EXIT' | 'HOLD' | 'AVOID';
   reason: string;
@@ -335,14 +366,14 @@ export function sweepManagementAdvice(
   atrVal: number,
   direction: 'LONG' | 'SHORT',
 ): SweepManagement {
-  const aligned = sweeps.filter(s => s.direction === direction && s.confirmed);
+  const aligned  = sweeps.filter(s => s.direction === direction && s.confirmed);
   const opposing = sweeps.filter(s => s.direction !== direction && s.confirmed);
 
   if (aligned.length === 0 && opposing.length === 0) {
     return { action: 'HOLD', reason: 'No active sweeps detected', riskNote: 'Standard SL placement' };
   }
 
-  const best = aligned[0];
+  const best   = aligned[0];
   const threat = opposing[0];
 
   if (threat && threat.score >= 75) {
@@ -393,19 +424,34 @@ export function oteZone(high: number, low: number): { low: number; high: number 
   return { low: high - range * 0.786, high: high - range * 0.618 };
 }
 
+// trendLabel uses EMAs + price structure (HH/HL or LH/LL) for less lag
 export function trendLabel(candles: RawCandle[]): string {
   if (candles.length < 50) return 'NEUTRAL';
   const closes = candles.map((c) => c.close);
-  const e14 = ema(closes, 14);
-  const e28 = ema(closes, 28);
+  const e21 = ema(closes, 21);
   const e50 = ema(closes, 50);
-  const last14 = e14[e14.length - 1];
-  const last28 = e28[e28.length - 1];
+  const last21 = e21[e21.length - 1];
   const last50 = e50[e50.length - 1];
-  if (last14 > last28 && last28 > last50) return 'STRONG_UP';
-  if (last14 < last28 && last28 < last50) return 'STRONG_DOWN';
-  if (last14 > last50) return 'MILD_UP';
-  if (last14 < last50) return 'MILD_DOWN';
+
+  // Price structure: compare last 3 swing highs/lows
+  const pivots = pivotPoints(candles.slice(-60), 3);
+  const highs = pivots.filter(p => p.type === 'HIGH').map(p => p.price).slice(-3);
+  const lows  = pivots.filter(p => p.type === 'LOW').map(p => p.price).slice(-3);
+
+  const hhhl = highs.length >= 2 && lows.length >= 2 &&
+    highs[highs.length - 1] > highs[highs.length - 2] &&
+    lows[lows.length - 1] > lows[lows.length - 2];
+
+  const lhll = highs.length >= 2 && lows.length >= 2 &&
+    highs[highs.length - 1] < highs[highs.length - 2] &&
+    lows[lows.length - 1] < lows[lows.length - 2];
+
+  // Strong trend: EMAs stacked AND price structure confirms
+  if (last21 > last50 && hhhl) return 'STRONG_UP';
+  if (last21 < last50 && lhll) return 'STRONG_DOWN';
+  // Mild: EMA agrees but structure is mixed
+  if (last21 > last50) return 'MILD_UP';
+  if (last21 < last50) return 'MILD_DOWN';
   return 'NEUTRAL';
 }
 

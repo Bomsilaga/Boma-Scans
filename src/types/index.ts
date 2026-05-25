@@ -77,6 +77,7 @@ export interface DeepAnalysis {
 }
 
 export interface ScanResult {
+  engineVersion?: string;
   symbol: string;
   price: number;
   change24h: number;
@@ -112,6 +113,7 @@ export interface ScanResult {
 }
 
 export interface AnalyseResponse {
+  engineVersion?: string;
   symbol: string;
   price: number;
   direction: Direction;

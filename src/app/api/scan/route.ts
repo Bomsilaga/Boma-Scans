@@ -1,9 +1,8 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchAllTickers, fetchKlines } from '@/lib/bybit';
 import { runEngine } from '@/lib/signalEngine';
+import { runEngine as runEngineV1 } from '@/lib/signalEngine_v1';
 import type { ScanResult } from '@/types';
-
-
 
 const MIN_VOLUME = 5_000_000;
 const MIN_SCORE  = 55;
@@ -11,8 +10,12 @@ const MIN_ALIGN  = 65;
 const BATCH      = 3;
 const TOP_N      = 100;
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const start = Date.now();
+  // ?engine=v1 uses Boma Scan 1, default is Boma Intelligent
+  const useV1 = req.nextUrl.searchParams.get('engine') === 'v1';
+  const engine = useV1 ? runEngineV1 : runEngine;
+
   try {
     const allTickers = await fetchAllTickers();
     const candidates = allTickers
@@ -36,9 +39,8 @@ export async function GET() {
             fetchKlines(t.symbol, 'D', 100),
           ]);
           const candleMap = { '1m': c1m, '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h, '1d': c1d };
-          const eng = runEngine(t.symbol, t.price, candleMap, timestamp);
+          const eng = engine(t.symbol, t.price, candleMap, timestamp);
 
-          // Persona filter
           if (eng.direction === 'NEUTRAL') return null;
           if (eng.alignmentScore < MIN_ALIGN) return null;
           if (eng.totalScore < MIN_SCORE) return null;
@@ -56,10 +58,10 @@ export async function GET() {
             tier === 'C'  ? 'BORDERLINE'          : 'Watch only';
 
           const verdictEmoji = { 'A+': '🔥', A: '⭐', B: '✅', C: '⚠️', WATCH: '👁️' }[tier];
-
           const sig = eng.scalpSignal;
 
           const result: ScanResult = {
+            engineVersion: (eng as { engineVersion?: string }).engineVersion ?? 'Boma Scan 1',
             symbol: t.symbol,
             price: t.price,
             change24h: t.change24h,
@@ -119,6 +121,7 @@ export async function GET() {
       scanned: candidates.length,
       elapsed: Date.now() - start,
       timestamp,
+      engineVersion: useV1 ? 'Boma Scan 1' : 'Boma Intelligent v2',
     });
   } catch (err) {
     console.error(err);

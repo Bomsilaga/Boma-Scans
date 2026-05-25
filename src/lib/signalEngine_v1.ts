@@ -1,111 +1,27 @@
-// Boma Intelligent — v2 signal engine
-// Improvements over Boma Scan 1 (signalEngine_v1.ts):
-//   - HTF bias hard gate (4h + 1d must not oppose direction)
-//   - OTE-based limit entry instead of always-market-price
-//   - Stricter BOS: requires two consecutive closes beyond swing (not just one)
-//   - Real ICT order-block detection (last opposite candle before impulse)
-//   - EMA ribbon (8/13/21/34/55) for trend quality grading
-//   - Stochastic RSI for overbought/oversold timing
-//   - Bullish/bearish RSI divergence detection
-//   - Multi-TF RSI gate: LTF RSI must not be extreme against direction
-//   - Volume profile S/R: POC as magnet / rejection zone
-//   - Sweep direction must match trade direction (no counter-sweep longs)
-//   - Sequenced scoring: structure bonuses only stack when BOS is confirmed
-
 import type { RawCandle } from './bybit';
 import type { Direction, SetupStyle, StyleSignal, DeepAnalysis, AlignmentQuality } from '@/types';
 import {
-  ema, rsi, atr, macd, bollingerBands, vwap, poc, volRatio,
+  rsi, atr, macd, bollingerBands, vwap, poc, volRatio,
   swingHighLow, fibLevels, wyckoffPhase, oteZone,
   detectBOS, detectOB, detectFVG, detectChoCH,
   detectSweeps, sweepManagementAdvice,
   trendLabel, alignmentScore,
 } from './indicators';
 
-export const ENGINE_VERSION = 'Boma Intelligent v2' as const;
+const FEE_PCT = 0.22; // 4 fills × 0.055% taker
 
-const FEE_PCT = 0.22;
-
-// ── EMA ribbon quality ────────────────────────────────────────────────────────
-// A properly stacked ribbon (fast > slow for LONG, reverse for SHORT) indicates
-// a high-quality trend. Returns 0–3 quality points.
-function emaRibbonScore(closes: number[], direction: 'LONG' | 'SHORT'): number {
-  if (closes.length < 55) return 0;
-  const e8  = ema(closes, 8);
-  const e13 = ema(closes, 13);
-  const e21 = ema(closes, 21);
-  const e34 = ema(closes, 34);
-  const e55 = ema(closes, 55);
-  const last = (arr: number[]) => arr[arr.length - 1];
-  const l8 = last(e8), l13 = last(e13), l21 = last(e21), l34 = last(e34), l55 = last(e55);
-  if (direction === 'LONG') {
-    if (l8 > l13 && l13 > l21 && l21 > l34 && l34 > l55) return 3; // perfect stack
-    if (l8 > l21 && l21 > l55) return 2;
-    if (l8 > l55) return 1;
-    return 0;
-  } else {
-    if (l8 < l13 && l13 < l21 && l21 < l34 && l34 < l55) return 3;
-    if (l8 < l21 && l21 < l55) return 2;
-    if (l8 < l55) return 1;
-    return 0;
-  }
-}
-
-// ── Stochastic RSI (0–100) ────────────────────────────────────────────────────
-function stochRsi(closes: number[], rsiPeriod = 14, stochPeriod = 14): number {
-  if (closes.length < rsiPeriod + stochPeriod + 2) return 50;
-  // Build RSI series
-  const rsiSeries: number[] = [];
-  for (let i = rsiPeriod; i < closes.length; i++) {
-    rsiSeries.push(rsi(closes.slice(0, i + 1), rsiPeriod));
-  }
-  const window = rsiSeries.slice(-stochPeriod);
-  const minR = Math.min(...window);
-  const maxR = Math.max(...window);
-  if (maxR === minR) return 50;
-  return ((rsiSeries[rsiSeries.length - 1] - minR) / (maxR - minR)) * 100;
-}
-
-// ── RSI divergence ────────────────────────────────────────────────────────────
-// Bullish: price makes lower low but RSI makes higher low → hidden strength
-// Bearish: price makes higher high but RSI makes lower high → hidden weakness
-function detectDivergence(candles: RawCandle[]): 'BULL_DIV' | 'BEAR_DIV' | 'NONE' {
-  if (candles.length < 30) return 'NONE';
-  const window = candles.slice(-30);
-  const closes = window.map(c => c.close);
-  const rsiNow  = rsi(closes, 14);
-  const rsiMid  = rsi(closes.slice(0, 20), 14);
-  const priceMid = closes[19];
-  const priceLast = closes[closes.length - 1];
-
-  // Bullish divergence: price lower, RSI higher
-  if (priceLast < priceMid && rsiNow > rsiMid + 3) return 'BULL_DIV';
-  // Bearish divergence: price higher, RSI lower
-  if (priceLast > priceMid && rsiNow < rsiMid - 3) return 'BEAR_DIV';
-  return 'NONE';
-}
-
-// ── POC as S/R ────────────────────────────────────────────────────────────────
-// Price close to POC (within 0.5 ATR) can act as support (LONG) or resistance (SHORT)
-function pocAlignment(
-  price: number,
-  pocVal: number,
-  atrVal: number,
+// ── HTF bias: 4h + 1d must not be strongly opposed to the direction ───────────
+// Returns false if higher timeframes are clearly against the trade direction.
+function htfBiasOk(
+  trendMap: Record<string, string>,
   direction: 'LONG' | 'SHORT',
 ): boolean {
-  const dist = Math.abs(price - pocVal);
-  if (dist > atrVal * 0.5) return false;
-  // For LONG: price above POC = POC acting as support ✅
-  // For SHORT: price below POC = POC acting as resistance ✅
-  return direction === 'LONG' ? price >= pocVal : price <= pocVal;
-}
-
-// ── HTF bias gate ─────────────────────────────────────────────────────────────
-function htfBiasOk(trendMap: Record<string, string>, direction: 'LONG' | 'SHORT'): boolean {
-  const h4 = trendMap['4h'] ?? 'NEUTRAL';
-  const d1 = trendMap['1d'] ?? 'NEUTRAL';
+  const h4  = trendMap['4h'] ?? 'NEUTRAL';
+  const d1  = trendMap['1d'] ?? 'NEUTRAL';
   if (direction === 'LONG') {
+    // Block if 4h OR 1d is strongly down
     if (h4 === 'STRONG_DOWN' || d1 === 'STRONG_DOWN') return false;
+    // If both are mild down, also block
     if (h4.includes('DOWN') && d1.includes('DOWN')) return false;
   } else {
     if (h4 === 'STRONG_UP' || d1 === 'STRONG_UP') return false;
@@ -114,23 +30,26 @@ function htfBiasOk(trendMap: Record<string, string>, direction: 'LONG' | 'SHORT'
   return true;
 }
 
-// ── OTE-based smart entry ─────────────────────────────────────────────────────
+// ── Smarter entry: prefer OTE zone, then VWAP, then POC, else market ─────────
 function calcEntry(
   price: number,
   direction: 'LONG' | 'SHORT',
   ote: { low: number; high: number },
   vwapVal: number,
   pocVal: number,
+  atrVal: number,
 ): { entry: number; entryTiming: StyleSignal['entryTiming'] } {
   const inOTE = price >= ote.low && price <= ote.high;
   if (inOTE) return { entry: price, entryTiming: 'READY' };
 
+  // Price is away from OTE — suggest a limit entry inside the zone
   if (direction === 'LONG') {
+    // If price is above OTE (ran), suggest waiting for pullback to OTE high
     if (price > ote.high) {
-      // Use the better of VWAP or POC as pullback target, anchored to OTE high
       const limitEntry = Math.max(ote.high, Math.min(vwapVal, pocVal));
       return { entry: limitEntry, entryTiming: 'WAIT_PULLBACK' };
     }
+    // Price below OTE — wait for price to reach OTE low
     return { entry: ote.low, entryTiming: 'WAIT_RETEST' };
   } else {
     if (price < ote.low) {
@@ -169,14 +88,14 @@ function calcLeverage(
   else if (align < 55)  { base = Math.round(base * 0.75); reasons.push('weak alignment (−25%)'); }
 
   const structs = [hasBOS, hasOB, hasSweep].filter(Boolean).length;
-  if (structs === 3)      { base = Math.round(base * 1.20); reasons.push('full structure (+20%)'); }
+  if (structs === 3)      { base = Math.round(base * 1.20); reasons.push('full structure (BOS+OB+Sweep +20%)'); }
   else if (structs === 2) { base = Math.round(base * 1.10); reasons.push('good structure (+10%)'); }
   else if (structs === 0) { base = Math.round(base * 0.80); reasons.push('no structure (−20%)'); }
 
   if (score >= 80)     { base = Math.round(base * 1.15); reasons.push('high score (+15%)'); }
   else if (score < 60) { base = Math.round(base * 0.85); reasons.push('low score (−15%)'); }
 
-  if (rsiVal > 75 || rsiVal < 25)   { base = Math.round(base * 0.70); reasons.push('RSI extreme (−30%)'); }
+  if (rsiVal > 75 || rsiVal < 25) { base = Math.round(base * 0.70); reasons.push('RSI extreme (−30%)'); }
   else if (rsiVal > 68 || rsiVal < 32) { base = Math.round(base * 0.85); reasons.push('RSI stretched (−15%)'); }
 
   const leverage = Math.max(floor, Math.min(cap, base));
@@ -219,13 +138,13 @@ export function buildSignalText(
     }).join('\n');
 
   const timingNote = sig.entryTiming === 'READY'
-    ? '✅ In OTE zone — enter at market or limit'
+    ? '✅ Price in OTE zone — enter at market or limit'
     : sig.entryTiming === 'WAIT_PULLBACK'
-    ? '⏳ Extended — wait for pullback to this price'
-    : '⏳ Place limit here and wait for retest';
+    ? '⏳ Price extended — wait for pullback to entry level'
+    : '⏳ Awaiting retest — place limit at entry level';
 
   return [
-    `🤖 BOMA INTELLIGENT [${style}]`,
+    `🚀 4SCANS SIGNAL [${style}]`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
     `📌 ${symbol} PERP — ${dirEmoji} ${direction}`,
     `⏱️  ${timestamp}`,
@@ -283,7 +202,6 @@ export interface EngineResult {
   swingSignal: StyleSignal;
   deep: DeepAnalysis;
   candles: RawCandle[];
-  engineVersion: string;
 }
 
 function buildVerdict(
@@ -301,50 +219,58 @@ function buildVerdict(
   const tier = score >= 85 ? 'A+' : score >= 72 ? 'A' : score >= 60 ? 'B' : 'C';
 
   const risks: string[] = [];
-  if (deep.rsi > 72) risks.push('RSI overbought — avoid chasing longs');
-  if (deep.rsi < 28) risks.push('RSI oversold — avoid chasing shorts');
-  if (atrPct > 0.03) risks.push('high volatility — size down');
-  if (alignQuality === 'POOR') risks.push('weak TF alignment — wait for confluence');
-  if (deep.amdBias === 'DISTRIBUTION' && isLong) risks.push('Wyckoff distribution — longs at risk');
-  if (deep.amdBias === 'ACCUMULATION' && !isLong) risks.push('Wyckoff accumulation — shorts at risk');
+  if (deep.rsi > 72) risks.push('RSI is overbought — avoid chasing longs');
+  if (deep.rsi < 28) risks.push('RSI is oversold — avoid chasing shorts');
+  if (atrPct > 0.03) risks.push('volatility is high — size down or wait for compression');
+  if (alignQuality === 'POOR') risks.push('timeframe alignment is weak — wait for confluence');
+  if (deep.amdBias === 'DISTRIBUTION' && isLong) risks.push('Wyckoff distribution phase — longs at risk');
+  if (deep.amdBias === 'ACCUMULATION' && !isLong) risks.push('Wyckoff accumulation phase — shorts at risk');
 
   const confirms: string[] = [];
-  if (deep.hasBOS)   confirms.push('BOS confirmed');
+  if (deep.hasBOS)   confirms.push('Break of Structure confirmed');
   if (deep.hasOB)    confirms.push('Order Block present');
-  if (deep.hasFVG)   confirms.push('FVG identified');
-  if (deep.hasChoCH) confirms.push('CHoCH detected');
-  if (deep.hasSweep) confirms.push('liquidity sweep — smart money active');
-  if (deep.vwapAbove === isLong) confirms.push(`price ${isLong ? 'above' : 'below'} VWAP`);
-  if (deep.macdBull && isLong)  confirms.push('MACD bullish');
-  if (deep.macdBear && !isLong) confirms.push('MACD bearish');
+  if (deep.hasFVG)   confirms.push('Fair Value Gap identified');
+  if (deep.hasChoCH) confirms.push('Change of Character detected');
+  if (deep.hasSweep) confirms.push('Liquidity sweep occurred — smart money active');
+  if (deep.vwapAbove === isLong) confirms.push(`price is ${isLong ? 'above' : 'below'} VWAP`);
+  if (deep.macdBull && isLong)  confirms.push('MACD momentum is bullish');
+  if (deep.macdBear && !isLong) confirms.push('MACD momentum is bearish');
 
   let timing = '';
   if (intradaySignal.entryTiming === 'READY') {
-    timing = `Price is in OTE — enter at market or limit near $${intradaySignal.entry.toFixed(4)}.`;
+    timing = `Price is in the OTE zone — entry is valid NOW at market or limit near $${intradaySignal.entry.toFixed(4)}.`;
   } else if (intradaySignal.entryTiming === 'WAIT_PULLBACK') {
-    timing = `Price extended — wait for pullback to $${intradaySignal.entry.toFixed(4)}.`;
+    timing = `Price has run ahead — WAIT for pullback to $${intradaySignal.entry.toFixed(4)} before entering.`;
   } else {
-    timing = `Place limit at $${intradaySignal.entry.toFixed(4)} and wait for price to reach you.`;
+    timing = `Awaiting retest — place limit at $${intradaySignal.entry.toFixed(4)} and wait for price to come to you.`;
   }
 
   let action = '';
   if (score >= 75 && confidence >= 65 && risks.length === 0) {
-    action = `✅ HIGH CONVICTION ${dirWord}. ${bestSetup} recommended. ${timing}`;
+    action = `✅ HIGH CONVICTION ${dirWord} setup. ${bestSetup} is the recommended style. ${timing}`;
   } else if (score >= 60 && confidence >= 50) {
-    action = `⚠️ MODERATE ${dirWord} setup. ${timing} Cut size 30–50% and respect your stop.`;
+    action = `⚠️ MODERATE setup — ${dirWord} bias with caveats. ${timing} Reduce position size by 30–50% and honour your stop.`;
   } else {
-    action = `🚫 LOW QUALITY. Mixed signals — stay flat or minimal size. ${timing}`;
+    action = `🚫 LOW QUALITY setup. Signals are mixed — stay flat or use minimal size. ${timing}`;
   }
+
+  const confirmLine = confirms.length > 0
+    ? `Confirmed by: ${confirms.join(', ')}.`
+    : 'No strong structure confirmation yet.';
+
+  const riskLine = risks.length > 0
+    ? `Key risks: ${risks.join('; ')}.`
+    : 'No major red flags on this setup.';
 
   return [
     `[ TIER ${tier} · Score ${score}/100 · Confidence ${confidence}% ]`,
     '',
     action,
     '',
-    confirms.length > 0 ? `Confirmed by: ${confirms.join(', ')}.` : 'No strong structure confirmation yet.',
-    risks.length > 0 ? `Key risks: ${risks.join('; ')}.` : 'No major red flags.',
+    confirmLine,
+    riskLine,
     '',
-    `SL beyond $${intradaySignal.stopLoss.toFixed(4)} — exit on close past that level. TP1 $${intradaySignal.tp1.toFixed(4)} → TP2 $${intradaySignal.tp2.toFixed(4)} → TP3 $${intradaySignal.tp3.toFixed(4)}.`,
+    `Stop loss must sit beyond $${intradaySignal.stopLoss.toFixed(4)}. If price closes beyond that level — EXIT immediately. Target TP1 at $${intradaySignal.tp1.toFixed(4)}, then trail to TP2 $${intradaySignal.tp2.toFixed(4)} and TP3 $${intradaySignal.tp3.toFixed(4)}.`,
   ].join('\n');
 }
 
@@ -362,10 +288,9 @@ export function runEngine(
   }
 
   const trends = Object.values(trendMap);
-  const upCount   = trends.filter(t => t.includes('UP')).length;
-  const downCount = trends.filter(t => t.includes('DOWN')).length;
+  const upCount   = trends.filter((t) => t.includes('UP')).length;
+  const downCount = trends.filter((t) => t.includes('DOWN')).length;
   const direction: Direction = upCount > downCount ? 'LONG' : downCount > upCount ? 'SHORT' : 'NEUTRAL';
-  const resolvedDir = direction === 'NEUTRAL' ? 'LONG' : direction;
 
   const align = alignmentScore(trends);
   const alignQuality: AlignmentQuality =
@@ -373,12 +298,8 @@ export function runEngine(
 
   const h1  = candleMap['1h']  ?? candleMap['15m'] ?? [];
   const h4  = candleMap['4h']  ?? [];
-  const m15 = candleMap['15m'] ?? [];
-  const closes1h  = h1.map(c => c.close);
-  const closes15m = m15.map(c => c.close);
-
+  const closes1h = h1.map((c) => c.close);
   const rsiVal   = rsi(closes1h);
-  const rsi15m   = closes15m.length >= 15 ? rsi(closes15m) : 50;
   const macdVal  = macd(closes1h);
   const bbVal    = bollingerBands(closes1h);
   const vwapVal  = vwap(h1);
@@ -387,34 +308,23 @@ export function runEngine(
   const atrVal   = atr(h1);
   const atrPct   = atrVal / price;
 
-  // New accuracy features
-  const ribbonScore  = emaRibbonScore(closes1h, resolvedDir);
-  const stochRsiVal  = stochRsi(closes1h);
-  const divergence   = detectDivergence(h1);
-  const pocAligned   = pocAlignment(price, pocVal, atrVal, resolvedDir);
-
   const { high: swHigh, low: swLow } = swingHighLow(h4.length >= 20 ? h4 : h1, 30);
   const ote    = oteZone(swHigh, swLow);
   const fibs   = fibLevels(swHigh, swLow);
   const wyck   = wyckoffPhase(h1);
-
   const hasBOS   = detectBOS(h1);
-  const hasOB    = direction !== 'NEUTRAL' ? detectOB(h1, resolvedDir) : false;
+  const hasOB    = direction !== 'NEUTRAL' ? detectOB(h1, direction === 'LONG' ? 'LONG' : 'SHORT') : false;
   const hasFVG   = detectFVG(h1.slice(-10));
   const hasChoCH = detectChoCH(h1);
   const sweeps   = detectSweeps(h1);
   const hasSweep = sweeps.length > 0;
-  // Only count sweeps that agree with our direction
-  const alignedSweep = sweeps.some(s => s.direction === resolvedDir && s.confirmed);
-
-  const sweepMgmt = sweepManagementAdvice(sweeps, price, atrVal, resolvedDir);
+  const sweepMgmt = sweepManagementAdvice(sweeps, price, atrVal, direction === 'NEUTRAL' ? 'LONG' : direction);
   const macdBull = macdVal.histogram > 0 && macdVal.macdLine > macdVal.signalLine;
   const macdBear = macdVal.histogram < 0 && macdVal.macdLine < macdVal.signalLine;
   const vwapAbove = price > vwapVal;
-  const inOTE = price >= ote.low && price <= ote.high;
 
-  const recentH1   = h1.slice(-30);
-  const midIdx     = Math.floor(recentH1.length / 2);
+  const recentH1  = h1.slice(-30);
+  const midIdx    = Math.floor(recentH1.length / 2);
   const accumPhase = recentH1.slice(0, midIdx);
   const distPhase  = recentH1.slice(midIdx);
   const accumRange = Math.max(...accumPhase.map(c => c.high)) - Math.min(...accumPhase.map(c => c.low));
@@ -435,104 +345,94 @@ export function runEngine(
     sweepManagement: sweepMgmt,
   };
 
-  // ── Boma Intelligent scoring ───────────────────────────────────────────────
+  // ── Scoring: tiered and sequenced, not just additive ──────────────────────
+  const resolvedDir = direction === 'NEUTRAL' ? 'LONG' : direction;
   const htfOk = htfBiasOk(trendMap, resolvedDir);
 
   let score = 0;
 
-  // 1. Alignment base — 28 pts max
-  score += Math.round(align * 0.28);
+  // Alignment base (30 pts)
+  score += Math.round(align * 0.30);
 
-  // 2. HTF gate — halve score if trading into higher-TF trend
+  // HTF bias gate: penalise hard if trading against 4h+1d
   if (!htfOk) score = Math.round(score * 0.5);
 
-  // 3. EMA ribbon quality — up to 6 pts (ribbon score is 0–3, ×2)
-  score += ribbonScore * 2;
-
-  // 4. Structure (sequenced — OB/sweep only bonus after BOS)
+  // Structure: BOS is the anchor — other signals are only meaningful after BOS
   if (hasBOS) {
-    score += 16;
-    if (hasOB)         score += 10;
-    if (alignedSweep)  score += 8;  // only count sweeps pointing our way
-    if (hasChoCH)      score += 5;
+    score += 18;
+    if (hasOB)    score += 12; // OB only counts when BOS exists
+    if (hasSweep) score += 8;  // sweep before BOS = smart money confirmation
+    if (hasChoCH) score += 6;
   } else {
-    if (hasOB)        score += 3;
-    if (alignedSweep) score += 3;
-    if (hasChoCH)     score += 3;
+    // No BOS — structure is weak, cap the bonus
+    if (hasOB)    score += 4;
+    if (hasSweep) score += 4;
+    if (hasChoCH) score += 4;
   }
 
-  if (hasFVG) score += 4;
+  if (hasFVG) score += 5;
 
-  // 5. Momentum — each confirming indicator adds pts
-  if (macdBull && resolvedDir === 'LONG')  score += 5;
-  if (macdBear && resolvedDir === 'SHORT') score += 5;
-  if (vwapAbove === (resolvedDir === 'LONG')) score += 4;
-  if (vrVal >= 1.5) score += 3;
-  if (vrVal >= 2.0) score += 2; // extra for very high volume
+  // Momentum stack
+  const momentumCount = [
+    macdBull || macdBear,
+    vwapAbove === (resolvedDir === 'LONG'),
+    vrVal >= 1.5,
+    rsiVal > 45 && rsiVal < 70 && resolvedDir === 'LONG',
+    rsiVal > 30 && rsiVal < 55 && resolvedDir === 'SHORT',
+  ].filter(Boolean).length;
+  score += momentumCount * 3;
 
-  // 6. RSI quality (not extreme, in healthy zone for direction)
-  const rsiHealthy = resolvedDir === 'LONG'
-    ? rsiVal > 45 && rsiVal < 68
-    : rsiVal > 32 && rsiVal < 55;
-  if (rsiHealthy) score += 3;
+  // OTE entry bonus
+  const inOTE = price >= ote.low && price <= ote.high;
+  if (inOTE) score += 6;
 
-  // 7. Stochastic RSI: oversold for LONG, overbought for SHORT = good timing
-  if (resolvedDir === 'LONG'  && stochRsiVal < 25) score += 4;
-  if (resolvedDir === 'SHORT' && stochRsiVal > 75) score += 4;
-
-  // 8. RSI divergence confirmation
-  if (divergence === 'BULL_DIV' && resolvedDir === 'LONG')  score += 5;
-  if (divergence === 'BEAR_DIV' && resolvedDir === 'SHORT') score += 5;
-  // Divergence against direction = red flag
-  if (divergence === 'BEAR_DIV' && resolvedDir === 'LONG')  score -= 5;
-  if (divergence === 'BULL_DIV' && resolvedDir === 'SHORT') score -= 5;
-
-  // 9. Entry zone quality
-  if (inOTE) score += 5;
-  if (pocAligned) score += 3;
-
-  // 10. Wyckoff alignment
+  // Wyckoff alignment
   if (wyck === 'MARKUP'       && resolvedDir === 'LONG')  score += 4;
   if (wyck === 'MARKDOWN'     && resolvedDir === 'SHORT') score += 4;
   if (wyck === 'ACCUMULATION' && resolvedDir === 'LONG')  score += 3;
-  if (wyck === 'DISTRIBUTION' && resolvedDir === 'SHORT') score += 3;
 
-  // 11. LTF RSI confirmation (15m must not be extreme against direction)
-  const ltfRsiOk = resolvedDir === 'LONG' ? rsi15m < 72 : rsi15m > 28;
-  if (!ltfRsiOk) score -= 6;
-
-  // 12. Penalties
-  if (rsiVal > 78 || rsiVal < 22) score -= 12;
-  else if (rsiVal > 72 || rsiVal < 28) score -= 6;
+  // RSI extreme penalty (likely to reverse)
+  if (rsiVal > 78 || rsiVal < 22) score -= 10;
+  else if (rsiVal > 72 || rsiVal < 28) score -= 5;
 
   score = Math.max(0, Math.min(100, score));
 
   const confidence = Math.min(100, Math.round(
-    (align * 0.35) +
-    ([hasBOS, hasOB, hasFVG, hasChoCH, alignedSweep].filter(Boolean).length / 5) * 30 +
-    ([macdBull || macdBear, vwapAbove === (resolvedDir === 'LONG'), vrVal >= 1.2, ribbonScore >= 2].filter(Boolean).length / 4) * 35
+    (align * 0.4) +
+    ([hasBOS, hasOB, hasFVG, hasChoCH, hasSweep].filter(Boolean).length / 5) * 30 +
+    ([macdBull || macdBear, vwapAbove === (resolvedDir === 'LONG'), vrVal >= 1.2].filter(Boolean).length / 3) * 30
   ));
 
   const bestSetup: SetupStyle =
     atrPct < 0.005 ? 'SCALP' : atrPct < 0.015 ? 'INTRADAY' : 'SWING';
 
-  const { entry: smartEntry, entryTiming } = calcEntry(price, resolvedDir, ote, vwapVal, pocVal);
+  // ── Smart entry calculation ───────────────────────────────────────────────
+  const { entry: smartEntry, entryTiming } = calcEntry(
+    price, resolvedDir, ote, vwapVal, pocVal, atrVal
+  );
 
   function buildStyle(style: SetupStyle): StyleSignal {
     const cfg = STYLE_CFG[style];
     const isLong = resolvedDir !== 'SHORT';
+
+    // Use smart entry (limit/OTE-based) instead of always market price
     const entryPrice = smartEntry;
-    const sl = isLong ? entryPrice - atrVal * cfg.slMult : entryPrice + atrVal * cfg.slMult;
+    const sl = isLong
+      ? entryPrice - atrVal * cfg.slMult
+      : entryPrice + atrVal * cfg.slMult;
+
     const riskPerUnit = Math.abs(entryPrice - sl);
-    const tps = cfg.tpPcts.map(pct =>
+    const tps = cfg.tpPcts.map((pct) =>
       isLong ? entryPrice * (1 + pct / 100) : entryPrice * (1 - pct / 100)
     );
     const grossRR = riskPerUnit > 0 ? Math.abs(tps[1] - entryPrice) / riskPerUnit : 0;
     const feeCost = entryPrice * FEE_PCT / 100;
     const netRR   = Math.max(0, riskPerUnit > 0 ? (Math.abs(tps[1] - entryPrice) - feeCost) / riskPerUnit : 0);
+
     const { leverage, leverageOptions, reasoning } = calcLeverage(
       style, atrPct, align, score, rsiVal, hasBOS, hasOB, hasSweep
     );
+
     const sig: StyleSignal = {
       style,
       direction: resolvedDir,
@@ -546,8 +446,10 @@ export function runEngine(
       entryTiming,
       signalText: '',
     };
+
     sig.signalText = buildSignalText(
-      style, symbol, resolvedDir, sig, deep, align, alignQuality, score, trendMap, timestamp
+      style, symbol, resolvedDir,
+      sig, deep, align, alignQuality, score, trendMap, timestamp
     );
     return sig;
   }
@@ -555,12 +457,14 @@ export function runEngine(
   const scalpSignal    = buildStyle('SCALP');
   const intradaySignal = buildStyle('INTRADAY');
   const swingSignal    = buildStyle('SWING');
-  const masterBase     = buildStyle(bestSetup);
+
+  const masterBase = buildStyle(bestSetup);
   const masterSignal: StyleSignal = {
     ...masterBase,
     style: 'INTRADAY',
     signalText: buildSignalText(
-      'INTRADAY', symbol, resolvedDir, masterBase, deep, align, alignQuality, score, trendMap, timestamp
+      'INTRADAY', symbol, resolvedDir,
+      masterBase, deep, align, alignQuality, score, trendMap, timestamp
     ).replace('[INTRADAY]', '[MASTER]'),
   };
 
@@ -581,6 +485,5 @@ export function runEngine(
     swingSignal,
     deep,
     candles: h1.slice(-100),
-    engineVersion: ENGINE_VERSION,
   };
 }

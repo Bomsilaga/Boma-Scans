@@ -20,7 +20,7 @@ export default function CandleChart({ candles, entry, stopLoss, tp1, tp2, tp3, d
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || candles.length === 0) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d')!;
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;

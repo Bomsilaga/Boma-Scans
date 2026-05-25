@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AnalysePanel from '@/components/AnalysePanel';
 import ScannerPanel from '@/components/ScannerPanel';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { useAutoScan } from '@/hooks/useAutoScan';
 
 type View = 'analyse' | 'scanner';
 
@@ -51,6 +52,7 @@ function NotificationBell() {
 export default function Home() {
   const [view, setView] = useState<View>('scanner');
   const [symbol, setSymbol] = useState('BTCUSDT');
+  useAutoScan();
 
   function handleSelectSymbol(sym: string) {
     setSymbol(sym);

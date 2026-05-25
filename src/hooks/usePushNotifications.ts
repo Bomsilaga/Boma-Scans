@@ -24,7 +24,17 @@ export function usePushNotifications() {
 
     navigator.serviceWorker.register('/sw.js').then(async (reg) => {
       const existing = await reg.pushManager.getSubscription();
-      setState(existing ? 'subscribed' : 'unsubscribed');
+      if (existing) {
+        // Re-POST to server on every load — serverless memory resets on cold start
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscription: existing }),
+        }).catch(() => {});
+        setState('subscribed');
+      } else {
+        setState('unsubscribed');
+      }
     });
   }, []);
 

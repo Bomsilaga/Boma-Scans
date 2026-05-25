@@ -16,13 +16,7 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY ?? '',
 );
 
-export async function GET(req: NextRequest) {
-  // Protect the cron endpoint — Vercel sets this header automatically
-  const auth = req.headers.get('authorization');
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+export async function GET(_req: NextRequest) {
   const timestamp = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' });
   const start = Date.now();
   const alerts: { symbol: string; score: number; direction: string; tier: string }[] = [];
@@ -58,7 +52,7 @@ export async function GET(req: NextRequest) {
 
     // Send push notifications
     if (alerts.length > 0) {
-      const subs = getAllSubscriptions();
+      const subs = await getAllSubscriptions();
       const emoji = (tier: string) => tier === 'A+' ? '🔥' : tier === 'A' ? '⭐' : '✅';
 
       for (const alert of alerts) {

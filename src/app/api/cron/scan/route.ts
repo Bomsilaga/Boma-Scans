@@ -6,17 +6,16 @@ import { getAllSubscriptions } from '@/lib/subscriptions';
 
 
 
-const MIN_VOLUME  = 1_000_000;  // lower threshold to catch more coins
+const MIN_VOLUME  = 1_000_000;
 const ALERT_SCORE = 80;
-const BATCH       = 6;          // parallel fetches per batch
-
-webpush.setVapidDetails(
-  'mailto:' + (process.env.VAPID_EMAIL ?? 'admin@4scans.app'),
-  process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? '',
-  process.env.VAPID_PRIVATE_KEY ?? '',
-);
+const BATCH       = 6;
 
 export async function GET(_req: NextRequest) {
+  webpush.setVapidDetails(
+    'mailto:' + (process.env.VAPID_EMAIL ?? 'admin@4scans.app'),
+    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? '',
+    process.env.VAPID_PRIVATE_KEY ?? '',
+  );
   const timestamp = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Melbourne' });
   const start = Date.now();
   const alerts: { symbol: string; score: number; direction: string; tier: string }[] = [];

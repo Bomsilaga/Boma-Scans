@@ -12,13 +12,13 @@ export interface AISettings {
 
 export function useAISettings() {
   const [settings, setSettings] = useState<AISettings>({
-    provider: 'claude',
+    provider: '' as AIProvider,
     keys: { claude: '', openai: '', deepseek: '' },
   });
 
   useEffect(() => {
     try {
-      const p = (localStorage.getItem(KEY_PROVIDER) ?? 'claude') as AIProvider;
+      const p = (localStorage.getItem(KEY_PROVIDER) ?? '') as AIProvider;
       const k = JSON.parse(localStorage.getItem(KEY_KEYS) ?? '{}') as Record<AIProvider, string>;
       setSettings({ provider: p, keys: { ...{ claude: '', openai: '', deepseek: '' }, ...k } });
     } catch { /* ignore */ }

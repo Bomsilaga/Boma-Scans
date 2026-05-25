@@ -2,16 +2,18 @@
 import { useState } from 'react';
 import AnalysePanel from '@/components/AnalysePanel';
 import ScannerPanel from '@/components/ScannerPanel';
+import HeatmapPanel from '@/components/HeatmapPanel';
 import AISettingsModal from '@/components/AISettingsModal';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { useAutoScan } from '@/hooks/useAutoScan';
 import { useAISettings } from '@/hooks/useAISettings';
 
-type View = 'analyse' | 'scanner';
+type View = 'analyse' | 'scanner' | 'heatmap';
 
 const NAV = [
-  { id: 'analyse' as View, label: 'Analyse',  icon: '🔬' },
-  { id: 'scanner' as View, label: 'AutoScan', icon: '🌐' },
+  { id: 'analyse'  as View, label: 'Analyse',  icon: '🔬' },
+  { id: 'scanner'  as View, label: 'AutoScan', icon: '🌐' },
+  { id: 'heatmap'  as View, label: 'Heatmap',  icon: '🗺️' },
 ];
 
 function NotificationBell() {
@@ -129,6 +131,13 @@ export default function Home() {
         )}
         {view === 'scanner' && (
           <ScannerPanel
+            onSelect={handleSelectSymbol}
+            aiProvider={aiSettings.settings.provider}
+            aiApiKey={aiSettings.activeKey}
+          />
+        )}
+        {view === 'heatmap' && (
+          <HeatmapPanel
             onSelect={handleSelectSymbol}
             aiProvider={aiSettings.settings.provider}
             aiApiKey={aiSettings.activeKey}

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { AnalyseResponse, SetupStyle } from '@/types';
 import CandleChart from './CandleChart';
 import TradeButton from './TradeButton';
+import SweepCard from './SweepCard';
 
 type SignalStyle = 'MASTER' | 'SCALP' | 'INTRADAY' | 'SWING';
 
@@ -105,9 +106,9 @@ function StyleCard({ data, style, onSignal }: {
   );
 }
 
-interface Props { initialSymbol?: string }
+interface Props { initialSymbol?: string; onBack?: () => void }
 
-export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
+export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack }: Props) {
   const [input, setInput] = useState(initialSymbol);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AnalyseResponse | null>(null);
@@ -148,6 +149,17 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
 
   return (
     <div className="space-y-4 animate-slide-up">
+      {/* Back button */}
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <span>←</span>
+          <span>Back to AutoScan</span>
+        </button>
+      )}
+
       {/* Search bar */}
       <div className="card flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-48">
@@ -330,6 +342,27 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT' }: Props) {
                 </div>
               </div>
               <pre className="text-[11px] font-mono text-text-secondary whitespace-pre-wrap leading-relaxed">{signalOut.text}</pre>
+            </div>
+          )}
+
+          {/* Liquidity Sweeps */}
+          {data.deep.sweeps !== undefined && (
+            <div className="card p-0 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
+                <span className="text-sm font-bold text-text-primary">💧 Liquidity Sweep Analysis</span>
+                {data.deep.sweeps.length > 0 && (
+                  <span className="text-[10px] bg-bear/10 text-bear px-2 py-0.5 rounded-full font-semibold">
+                    {data.deep.sweeps.length} detected
+                  </span>
+                )}
+              </div>
+              <div className="p-4">
+                <SweepCard
+                  sweeps={data.deep.sweeps}
+                  management={data.deep.sweepManagement}
+                  direction={data.direction}
+                />
+              </div>
             </div>
           )}
 

@@ -3,7 +3,8 @@ import type { Direction, SetupStyle, StyleSignal, DeepAnalysis, AlignmentQuality
 import {
   rsi, atr, macd, bollingerBands, vwap, poc, volRatio,
   swingHighLow, fibLevels, wyckoffPhase, oteZone,
-  detectBOS, detectOB, detectFVG, detectChoCH, detectLiquiditySweep,
+  detectBOS, detectOB, detectFVG, detectChoCH,
+  detectSweeps, sweepManagementAdvice,
   trendLabel, alignmentScore,
 } from './indicators';
 
@@ -204,7 +205,9 @@ export function runEngine(
   const hasOB    = direction !== 'NEUTRAL' ? detectOB(h1, direction === 'LONG' ? 'LONG' : 'SHORT') : false;
   const hasFVG   = detectFVG(h1.slice(-10));
   const hasChoCH = detectChoCH(h1);
-  const hasSweep = detectLiquiditySweep(h1);
+  const sweeps   = detectSweeps(h1);
+  const hasSweep = sweeps.length > 0;
+  const sweepMgmt = sweepManagementAdvice(sweeps, price, atrVal, direction === 'NEUTRAL' ? 'LONG' : direction);
   const macdBull = macdVal.histogram > 0 && macdVal.macdLine > macdVal.signalLine;
   const macdBear = macdVal.histogram < 0 && macdVal.macdLine < macdVal.signalLine;
   const vwapAbove = price > vwapVal;
@@ -219,12 +222,17 @@ export function runEngine(
                   distRange < accumRange * 0.7 ? 'DISTRIBUTION' :
                   hasBOS ? 'MANIPULATION' : 'UNCLEAR';
 
+  // Strip candle object from sweeps for JSON serialisation (keep primitives only)
+  const sweepsForJson = sweeps.map(({ candle: _c, ...rest }) => rest);
+
   const deep: DeepAnalysis = {
     wyckoffPhase: wyck, rsi: rsiVal, bbWidth: bbVal.width,
     volRatio: vrVal, vwapAbove, poc: pocVal, oteZone: ote, amdBias,
     fibLevels: fibs, hasBOS, hasOB, hasFVG, hasSweep, hasChoCH,
     macdBull, macdBear,
     orderbookImbalance: macdBull ? 'BID_HEAVY' : macdBear ? 'ASK_HEAVY' : 'BALANCED',
+    sweeps: sweepsForJson,
+    sweepManagement: sweepMgmt,
   };
 
   let score = 0;

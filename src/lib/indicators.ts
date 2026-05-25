@@ -173,14 +173,219 @@ export function detectChoCH(candles: RawCandle[]): boolean {
   return trend1 !== trend2;
 }
 
+// ── Simple boolean for backward compat ───────────────────────────────────────
 export function detectLiquiditySweep(candles: RawCandle[]): boolean {
-  if (candles.length < 10) return false;
-  const prev = candles.slice(-10, -1);
-  const last = candles[candles.length - 1];
-  const prevHigh = Math.max(...prev.map((c) => c.high));
-  const prevLow  = Math.min(...prev.map((c) => c.low));
-  return (last.high > prevHigh && last.close < prevHigh) ||
-         (last.low  < prevLow  && last.close > prevLow);
+  return detectSweeps(candles).length > 0;
+}
+
+// ── Sweep types ───────────────────────────────────────────────────────────────
+export type SweepType =
+  | 'BSL_SWEEP'       // Buy-side liquidity swept (equal highs / swing high taken out)
+  | 'SSL_SWEEP'       // Sell-side liquidity swept (equal lows / swing low taken out)
+  | 'INDUCEMENT'      // Minor liquidity grab before major move
+  | 'STOP_HUNT'       // Spike beyond key level then immediate reversal
+  | 'DOUBLE_TOP_SWEEP'// Two consecutive highs swept
+  | 'DOUBLE_BOT_SWEEP';// Two consecutive lows swept
+
+export type SweepStrength = 'STRONG' | 'MODERATE' | 'WEAK';
+
+export interface SweepEvent {
+  type: SweepType;
+  strength: SweepStrength;
+  score: number;           // 0–100
+  direction: 'LONG' | 'SHORT'; // expected move AFTER sweep
+  sweptLevel: number;      // price level that was swept
+  rejectionClose: number;  // close that confirmed rejection
+  wickSize: number;        // wick beyond level as % of ATR
+  volumeSpike: boolean;    // volume on sweep candle > 1.5× avg
+  confirmed: boolean;      // close back inside range
+  candle: RawCandle;       // the sweep candle
+  candleIndex: number;
+  description: string;
+}
+
+export function detectSweeps(candles: RawCandle[], lookback = 20, atrPeriod = 14): SweepEvent[] {
+  if (candles.length < lookback + atrPeriod) return [];
+
+  const events: SweepEvent[] = [];
+
+  // ATR for context
+  const trs = candles.slice(1).map((c, i) =>
+    Math.max(c.high - c.low, Math.abs(c.high - candles[i].close), Math.abs(c.low - candles[i].close))
+  );
+  const atrVal = trs.slice(-atrPeriod).reduce((a, b) => a + b, 0) / atrPeriod || 1;
+
+  // Average volume for spike detection
+  const avgVol = candles.slice(-lookback - 5, -5).reduce((a, c) => a + c.volume, 0) / lookback;
+
+  // Scan last 10 candles for sweep events
+  const scanStart = Math.max(lookback, candles.length - 10);
+
+  for (let i = scanStart; i < candles.length; i++) {
+    const c = candles[i];
+    const window = candles.slice(i - lookback, i);
+    if (window.length < 5) continue;
+
+    const windowHigh = Math.max(...window.map(w => w.high));
+    const windowLow  = Math.min(...window.map(w => w.low));
+
+    // Equal highs / swing high (BSL) — price swept above then closed below
+    const bslSweep = c.high > windowHigh && c.close < windowHigh;
+    // Equal lows / swing low (SSL) — price swept below then closed above
+    const sslSweep = c.low < windowLow && c.close > windowLow;
+
+    if (!bslSweep && !sslSweep) continue;
+
+    const isBSL = bslSweep;
+    const sweptLevel  = isBSL ? windowHigh : windowLow;
+    const wickBeyond  = isBSL ? c.high - windowHigh : windowLow - c.low;
+    const wickPct     = wickBeyond / atrVal;
+    const volSpike    = c.volume > avgVol * 1.5;
+    const bodyBack    = isBSL
+      ? c.close < windowHigh   // closed back below swept high
+      : c.close > windowLow;   // closed back above swept low
+
+    // Check next candle for continuation confirmation (if available)
+    const nextC = candles[i + 1];
+    const followThrough = nextC
+      ? (isBSL ? nextC.close < c.close : nextC.close > c.close)
+      : false;
+
+    // Detect inducement: wick < 0.3 ATR = minor grab
+    // Detect stop hunt: wick > 1.5 ATR = large spike
+    // Detect double sweep: previous sweep level nearby
+    const prevWindow = candles.slice(i - lookback, i - 3);
+    const prevHigh2 = prevWindow.length ? Math.max(...prevWindow.map(w => w.high)) : 0;
+    const prevLow2  = prevWindow.length ? Math.min(...prevWindow.map(w => w.low)) : Infinity;
+
+    let type: SweepType;
+    if (wickPct > 1.5)       type = 'STOP_HUNT';
+    else if (wickPct < 0.3)  type = 'INDUCEMENT';
+    else if (isBSL && Math.abs(sweptLevel - prevHigh2) < atrVal * 0.2) type = 'DOUBLE_TOP_SWEEP';
+    else if (!isBSL && Math.abs(sweptLevel - prevLow2) < atrVal * 0.2) type = 'DOUBLE_BOT_SWEEP';
+    else                     type = isBSL ? 'BSL_SWEEP' : 'SSL_SWEEP';
+
+    // Score (0–100)
+    let score = 40;
+    if (bodyBack)          score += 20;
+    if (volSpike)          score += 15;
+    if (followThrough)     score += 10;
+    if (wickPct >= 0.5 && wickPct <= 2.0) score += 10; // ideal wick size
+    if (type === 'DOUBLE_TOP_SWEEP' || type === 'DOUBLE_BOT_SWEEP') score += 5;
+    if (type === 'STOP_HUNT') score -= 5; // stop hunts can be traps themselves
+    score = Math.min(100, score);
+
+    const strength: SweepStrength =
+      score >= 75 ? 'STRONG' : score >= 55 ? 'MODERATE' : 'WEAK';
+
+    const typeLabels: Record<SweepType, string> = {
+      BSL_SWEEP:        'Buy-Side Liquidity Sweep',
+      SSL_SWEEP:        'Sell-Side Liquidity Sweep',
+      INDUCEMENT:       'Inducement (minor grab)',
+      STOP_HUNT:        'Stop Hunt (large spike)',
+      DOUBLE_TOP_SWEEP: 'Double-Top Liquidity Sweep',
+      DOUBLE_BOT_SWEEP: 'Double-Bottom Liquidity Sweep',
+    };
+
+    events.push({
+      type,
+      strength,
+      score,
+      direction: isBSL ? 'SHORT' : 'LONG', // after BSL sweep → expect SHORT, after SSL → LONG
+      sweptLevel,
+      rejectionClose: c.close,
+      wickSize: parseFloat(wickPct.toFixed(2)),
+      volumeSpike: volSpike,
+      confirmed: bodyBack,
+      candle: c,
+      candleIndex: i,
+      description: [
+        `${typeLabels[type]} @ $${sweptLevel.toFixed(5)}`,
+        `Wick ${wickPct.toFixed(2)}× ATR`,
+        volSpike ? '🔥 Vol spike' : '',
+        bodyBack ? '✅ Confirmed' : '⚠️ Unconfirmed',
+        followThrough ? '→ Follow-through' : '',
+      ].filter(Boolean).join(' · '),
+    });
+  }
+
+  // Sort by score desc, deduplicate nearby levels (within 0.5 ATR)
+  const sorted = events.sort((a, b) => b.score - a.score);
+  const deduped: SweepEvent[] = [];
+  for (const ev of sorted) {
+    const nearby = deduped.find(d => Math.abs(d.sweptLevel - ev.sweptLevel) < atrVal * 0.5);
+    if (!nearby) deduped.push(ev);
+  }
+
+  return deduped;
+}
+
+// Management strategy: given active sweeps, return trade management advice
+export interface SweepManagement {
+  action: 'ENTER' | 'SCALE_IN' | 'TIGHTEN_SL' | 'EXIT' | 'HOLD' | 'AVOID';
+  reason: string;
+  suggestedEntry?: number;
+  suggestedSL?: number;
+  riskNote: string;
+}
+
+export function sweepManagementAdvice(
+  sweeps: SweepEvent[],
+  currentPrice: number,
+  atrVal: number,
+  direction: 'LONG' | 'SHORT',
+): SweepManagement {
+  const aligned = sweeps.filter(s => s.direction === direction && s.confirmed);
+  const opposing = sweeps.filter(s => s.direction !== direction && s.confirmed);
+
+  if (aligned.length === 0 && opposing.length === 0) {
+    return { action: 'HOLD', reason: 'No active sweeps detected', riskNote: 'Standard SL placement' };
+  }
+
+  const best = aligned[0];
+  const threat = opposing[0];
+
+  if (threat && threat.score >= 75) {
+    return {
+      action: 'EXIT',
+      reason: `Strong opposing ${threat.type} detected (score ${threat.score}) — liquidity may reverse`,
+      riskNote: 'Close position or move SL to breakeven immediately',
+    };
+  }
+
+  if (best && best.score >= 75 && best.strength === 'STRONG') {
+    return {
+      action: 'ENTER',
+      reason: `${best.type} confirmed (score ${best.score}) — high probability reversal`,
+      suggestedEntry: best.rejectionClose,
+      suggestedSL: direction === 'LONG'
+        ? best.sweptLevel - atrVal * 0.3
+        : best.sweptLevel + atrVal * 0.3,
+      riskNote: 'SL just beyond swept level with 0.3 ATR buffer',
+    };
+  }
+
+  if (best && best.score >= 55) {
+    return {
+      action: 'SCALE_IN',
+      reason: `${best.type} moderate strength — scale in on confirmation`,
+      suggestedEntry: currentPrice,
+      suggestedSL: direction === 'LONG'
+        ? best.sweptLevel - atrVal * 0.5
+        : best.sweptLevel + atrVal * 0.5,
+      riskNote: 'Use 50% position size until confirmed',
+    };
+  }
+
+  if (threat && threat.score >= 55) {
+    return {
+      action: 'TIGHTEN_SL',
+      reason: `Moderate opposing sweep (${threat.type}) — tighten stop`,
+      riskNote: 'Move SL to breakeven or partial profit lock',
+    };
+  }
+
+  return { action: 'HOLD', reason: 'Weak sweep signals — no action needed', riskNote: 'Maintain current SL' };
 }
 
 export function oteZone(high: number, low: number): { low: number; high: number } {

@@ -31,6 +31,28 @@ export interface StyleSignal {
   signalText: string;
 }
 
+export interface SweepEvent {
+  type: string;
+  strength: 'STRONG' | 'MODERATE' | 'WEAK';
+  score: number;
+  direction: 'LONG' | 'SHORT';
+  sweptLevel: number;
+  rejectionClose: number;
+  wickSize: number;
+  volumeSpike: boolean;
+  confirmed: boolean;
+  candleIndex: number;
+  description: string;
+}
+
+export interface SweepManagement {
+  action: 'ENTER' | 'SCALE_IN' | 'TIGHTEN_SL' | 'EXIT' | 'HOLD' | 'AVOID';
+  reason: string;
+  suggestedEntry?: number;
+  suggestedSL?: number;
+  riskNote: string;
+}
+
 export interface DeepAnalysis {
   wyckoffPhase: string;
   rsi: number;
@@ -49,6 +71,8 @@ export interface DeepAnalysis {
   macdBull: boolean;
   macdBear: boolean;
   orderbookImbalance: 'BID_HEAVY' | 'ASK_HEAVY' | 'BALANCED';
+  sweeps: SweepEvent[];
+  sweepManagement: SweepManagement;
 }
 
 export interface ScanResult {

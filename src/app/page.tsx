@@ -53,7 +53,7 @@ export default function Home() {
 
       <main className="max-w-screen-2xl mx-auto px-4 py-4">
         {view === 'analyse' && (
-          <AnalysePanel initialSymbol={symbol} />
+          <AnalysePanel initialSymbol={symbol} onBack={() => setView('scanner')} />
         )}
         {view === 'scanner' && (
           <ScannerPanel onSelect={handleSelectSymbol} />

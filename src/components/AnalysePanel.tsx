@@ -275,16 +275,41 @@ export default function AnalysePanel({ initialSymbol = 'BTCUSDT', onBack }: Prop
             </div>
           </div>
 
+          {/* Verdict */}
+          {data.verdict && (
+            <div className={`rounded-xl border-2 p-4 ${
+              data.verdict.startsWith('✅') ? 'border-bull/40 bg-bull/5' :
+              data.verdict.startsWith('⚠️') ? 'border-warning/40 bg-warning/5' :
+              'border-bear/40 bg-bear/5'
+            }`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-base">
+                  {data.verdict.startsWith('✅') ? '✅' : data.verdict.startsWith('⚠️') ? '⚠️' : '🚫'}
+                </span>
+                <span className="text-sm font-black text-text-primary">Analyst Verdict</span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ml-auto ${
+                  data.totalScore >= 85 ? 'bg-bull/15 text-bull' :
+                  data.totalScore >= 72 ? 'bg-bull/10 text-bull' :
+                  data.totalScore >= 60 ? 'bg-warning/10 text-warning' :
+                  'bg-bear/10 text-bear'
+                }`}>
+                  {data.totalScore >= 85 ? 'TIER A+' : data.totalScore >= 72 ? 'TIER A' : data.totalScore >= 60 ? 'TIER B' : 'TIER C'}
+                </span>
+              </div>
+              <pre className="text-[11px] font-mono text-text-secondary whitespace-pre-wrap leading-relaxed">{data.verdict}</pre>
+            </div>
+          )}
+
           {/* Candlestick chart */}
           {data.candles && data.candles.length > 0 && (
             <CandleChart
               candles={data.candles}
+              symbol={data.symbol}
               entry={data.intradaySignal.entry}
               stopLoss={data.intradaySignal.stopLoss}
               tp1={data.intradaySignal.tp1}
               tp2={data.intradaySignal.tp2}
               tp3={data.intradaySignal.tp3}
-              direction={data.direction}
               poc={data.deep.poc}
             />
           )}

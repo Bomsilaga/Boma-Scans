@@ -154,6 +154,7 @@ export interface EngineResult {
   alignmentScore: number;
   alignmentQuality: AlignmentQuality;
   bestSetup: SetupStyle;
+  verdict: string;
   trendMap: Record<string, string>;
   masterSignal: StyleSignal;
   scalpSignal: StyleSignal;
@@ -161,6 +162,80 @@ export interface EngineResult {
   swingSignal: StyleSignal;
   deep: DeepAnalysis;
   candles: RawCandle[];   // 1h candles for chart
+}
+
+function buildVerdict(
+  direction: Direction,
+  score: number,
+  confidence: number,
+  alignQuality: AlignmentQuality,
+  bestSetup: SetupStyle,
+  deep: DeepAnalysis,
+  intradaySignal: StyleSignal,
+  atrPct: number,
+): string {
+  const isLong = direction === 'LONG';
+  const dirWord = isLong ? 'LONG (bullish)' : 'SHORT (bearish)';
+  const tier = score >= 85 ? 'A+' : score >= 72 ? 'A' : score >= 60 ? 'B' : 'C';
+
+  // Risk assessment
+  const risks: string[] = [];
+  if (deep.rsi > 72) risks.push('RSI is overbought — avoid chasing longs');
+  if (deep.rsi < 28) risks.push('RSI is oversold — avoid chasing shorts');
+  if (atrPct > 0.03) risks.push('volatility is high — size down or wait for compression');
+  if (alignQuality === 'POOR') risks.push('timeframe alignment is weak — wait for confluence');
+  if (deep.amdBias === 'DISTRIBUTION' && isLong) risks.push('Wyckoff distribution phase — longs at risk');
+  if (deep.amdBias === 'ACCUMULATION' && !isLong) risks.push('Wyckoff accumulation phase — shorts at risk');
+
+  // Confirmations
+  const confirms: string[] = [];
+  if (deep.hasBOS)   confirms.push('Break of Structure confirmed');
+  if (deep.hasOB)    confirms.push('Order Block present');
+  if (deep.hasFVG)   confirms.push('Fair Value Gap identified');
+  if (deep.hasChoCH) confirms.push('Change of Character detected');
+  if (deep.hasSweep) confirms.push('Liquidity sweep occurred — smart money active');
+  if (deep.vwapAbove === isLong) confirms.push(`price is ${isLong ? 'above' : 'below'} VWAP`);
+  if (deep.macdBull && isLong)  confirms.push('MACD momentum is bullish');
+  if (deep.macdBear && !isLong) confirms.push('MACD momentum is bearish');
+
+  // Timing advice
+  let timing = '';
+  if (intradaySignal.entryTiming === 'READY') {
+    timing = `Price is in the OTE zone — entry is valid NOW at market or limit near $${intradaySignal.entry.toFixed(4)}.`;
+  } else if (intradaySignal.entryTiming === 'WAIT_PULLBACK') {
+    timing = `Price has run ahead — WAIT for a pullback toward $${intradaySignal.entry.toFixed(4)} before entering.`;
+  } else {
+    timing = `Structure not yet confirmed — WAIT for a retest of key level near $${intradaySignal.entry.toFixed(4)}.`;
+  }
+
+  // Action sentence
+  let action = '';
+  if (score >= 75 && confidence >= 65 && risks.length === 0) {
+    action = `✅ HIGH CONVICTION ${dirWord} setup. ${bestSetup} is the recommended style. ${timing}`;
+  } else if (score >= 60 && confidence >= 50) {
+    action = `⚠️ MODERATE setup — ${dirWord} bias with caveats. ${timing} Reduce position size by 30–50% and honour your stop.`;
+  } else {
+    action = `🚫 LOW QUALITY setup. Signals are mixed — stay flat or use minimal size. ${timing}`;
+  }
+
+  const confirmLine = confirms.length > 0
+    ? `Confirmed by: ${confirms.join(', ')}.`
+    : 'No strong structure confirmation yet.';
+
+  const riskLine = risks.length > 0
+    ? `Key risks: ${risks.join('; ')}.`
+    : 'No major red flags on this setup.';
+
+  return [
+    `[ TIER ${tier} · Score ${score}/100 · Confidence ${confidence}% ]`,
+    '',
+    action,
+    '',
+    confirmLine,
+    riskLine,
+    '',
+    `Stop loss must sit beyond $${intradaySignal.stopLoss.toFixed(4)}. If price closes beyond that level — EXIT immediately. Target TP1 at $${intradaySignal.tp1.toFixed(4)}, then trail to TP2 $${intradaySignal.tp2.toFixed(4)} and TP3 $${intradaySignal.tp3.toFixed(4)}.`,
+  ].join('\n');
 }
 
 export function runEngine(
@@ -313,13 +388,17 @@ export function runEngine(
     ).replace('[INTRADAY]', '[MASTER]'),
   };
 
+  const resolvedDir = direction === 'NEUTRAL' ? 'LONG' : direction;
+  const verdict = buildVerdict(resolvedDir, score, confidence, alignQuality, bestSetup, deep, intradaySignal, atrPct);
+
   return {
-    direction: direction === 'NEUTRAL' ? 'LONG' : direction,
+    direction: resolvedDir,
     totalScore: score,
     confidence,
     alignmentScore: align,
     alignmentQuality: alignQuality,
     bestSetup,
+    verdict,
     trendMap,
     masterSignal,
     scalpSignal,

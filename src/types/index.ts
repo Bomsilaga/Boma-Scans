@@ -120,6 +120,7 @@ export interface AnalyseResponse {
   alignmentScore: number;
   alignmentQuality: AlignmentQuality;
   bestSetup: SetupStyle;
+  verdict: string;
   trendMap: Record<string, string>;
   masterSignal: StyleSignal;
   scalpSignal: StyleSignal;

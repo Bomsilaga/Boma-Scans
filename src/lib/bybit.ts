@@ -4,11 +4,23 @@ export interface RawCandle {
   time: number; open: number; high: number; low: number; close: number; volume: number;
 }
 
-async function kFetch(url: string): Promise<unknown> {
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`KuCoin HTTP ${res.status} — ${url}`);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { throw new Error(`KuCoin bad JSON: ${text.slice(0, 120)}`); }
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// Retry with exponential backoff on 429 rate-limit responses
+async function kFetch(url: string, retries = 4): Promise<unknown> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.status === 429) {
+      if (attempt === retries) throw new Error(`KuCoin rate limit (429) — ${url}`);
+      const wait = 1000 * 2 ** attempt; // 1s, 2s, 4s, 8s
+      await sleep(wait);
+      continue;
+    }
+    if (!res.ok) throw new Error(`KuCoin HTTP ${res.status} — ${url}`);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { throw new Error(`KuCoin bad JSON: ${text.slice(0, 120)}`); }
+  }
+  throw new Error(`KuCoin fetch failed after ${retries} retries`);
 }
 
 // KuCoin interval map
@@ -21,7 +33,6 @@ const IV: Record<string, string> = {
 // KuCoin uses BASE-QUOTE format e.g. BTC-USDT
 function toKucoinSymbol(symbol: string): string {
   if (symbol.includes('-')) return symbol;
-  // BTCUSDT -> BTC-USDT
   const quote = symbol.endsWith('USDT') ? 'USDT' : symbol.endsWith('BTC') ? 'BTC' : 'USDT';
   const base = symbol.slice(0, symbol.length - quote.length);
   return `${base}-${quote}`;

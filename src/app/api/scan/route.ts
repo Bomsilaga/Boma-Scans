@@ -8,7 +8,7 @@ import type { ScanResult } from '@/types';
 const MIN_VOLUME = 5_000_000;
 const MIN_SCORE  = 55;
 const MIN_ALIGN  = 65;
-const BATCH      = 8;
+const BATCH      = 3;
 const TOP_N      = 100;
 
 export async function GET() {

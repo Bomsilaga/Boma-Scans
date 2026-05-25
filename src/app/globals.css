@@ -1,0 +1,41 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    background: #0a0a0f;
+    color: #e8e8f0;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0a0f; }
+  ::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a4e; }
+}
+
+@layer components {
+  .card        { @apply bg-surface border border-border rounded-xl p-4; }
+  .badge-bull  { @apply text-xs px-2 py-0.5 rounded-full bg-bull/10 text-bull font-medium; }
+  .badge-bear  { @apply text-xs px-2 py-0.5 rounded-full bg-bear/10 text-bear font-medium; }
+  .badge-neutral { @apply text-xs px-2 py-0.5 rounded-full bg-muted text-text-secondary font-medium; }
+  .score-bar   { @apply h-2 rounded-full bg-muted overflow-hidden; }
+  .score-fill  { @apply h-full rounded-full transition-all duration-500; }
+  .btn-primary   { @apply px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded-lg font-medium transition-colors text-sm; }
+  .btn-secondary { @apply px-4 py-2 bg-muted hover:bg-border text-text-primary rounded-lg font-medium transition-colors text-sm; }
+  .btn-danger    { @apply px-4 py-2 bg-bear/20 hover:bg-bear/30 text-bear rounded-lg font-medium transition-colors text-sm; }
+  .input  { @apply bg-muted border border-border rounded-lg px-3 py-2 text-text-primary placeholder-text-muted focus:outline-none focus:border-accent text-sm w-full; }
+  .label  { @apply text-xs text-text-secondary font-medium uppercase tracking-wide; }
+  .mono   { font-family: 'JetBrains Mono', monospace; }
+}
+
+.animate-slide-up { animation: slideUp 0.3s ease-out; }
+
+@keyframes slideUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}

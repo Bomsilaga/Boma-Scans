@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import type { AnalyseResponse, SetupStyle } from '@/types';
 import CandleChart from './CandleChart';
+import TradeButton from './TradeButton';
 
 type SignalStyle = 'MASTER' | 'SCALP' | 'INTRADAY' | 'SWING';
 
@@ -93,6 +94,13 @@ function StyleCard({ data, style, onSignal }: {
       >
         📡 Generate {style} Signal
       </button>
+
+      <TradeButton
+        symbol={data.symbol}
+        direction={sig.direction as 'LONG' | 'SHORT'}
+        signal={sig}
+        style={style}
+      />
     </div>
   );
 }

@@ -6,10 +6,15 @@ export interface RawCandle {
 
 export async function fetchKlines(symbol: string, interval: string, limit = 200): Promise<RawCandle[]> {
   const url = `${BASE}/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
-  const res = await fetch(url, { next: { revalidate: 0 } });
-  const json = await res.json();
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Bybit HTTP ${res.status} for ${symbol} ${interval}`);
+  const text = await res.text();
+  let json: Record<string, unknown>;
+  try { json = JSON.parse(text); } catch { throw new Error(`Bybit kline bad JSON: ${text.slice(0, 100)}`); }
   if (json.retCode !== 0) throw new Error(`Bybit kline error: ${json.retMsg}`);
-  return (json.result.list as string[][])
+  const list = (json.result as Record<string, unknown>)?.list as string[][];
+  if (!list) return [];
+  return list
     .map(([t, o, h, l, c, v]) => ({
       time: Number(t), open: +o, high: +h, low: +l, close: +c, volume: +v,
     }))
@@ -18,9 +23,13 @@ export async function fetchKlines(symbol: string, interval: string, limit = 200)
 
 export async function fetchTicker(symbol: string): Promise<{ price: number; change24h: number; volume24h: number }> {
   const url = `${BASE}/v5/market/tickers?category=linear&symbol=${symbol}`;
-  const res = await fetch(url, { next: { revalidate: 0 } });
-  const json = await res.json();
-  const t = json.result?.list?.[0];
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Bybit HTTP ${res.status} for ticker ${symbol}`);
+  const text = await res.text();
+  let json: Record<string, unknown>;
+  try { json = JSON.parse(text); } catch { throw new Error(`Bybit ticker bad JSON: ${text.slice(0, 100)}`); }
+  const list = (json.result as Record<string, unknown[]>)?.list;
+  const t = list?.[0] as Record<string, string> | undefined;
   if (!t) throw new Error(`No ticker for ${symbol}`);
   return {
     price: parseFloat(t.lastPrice),
@@ -31,11 +40,15 @@ export async function fetchTicker(symbol: string): Promise<{ price: number; chan
 
 export async function fetchAllTickers(): Promise<{ symbol: string; price: number; change24h: number; volume24h: number }[]> {
   const url = `${BASE}/v5/market/tickers?category=linear`;
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  const json = await res.json();
-  return (json.result?.list ?? [])
-    .filter((t: Record<string, string>) => t.symbol.endsWith('USDT'))
-    .map((t: Record<string, string>) => ({
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Bybit HTTP ${res.status} for all tickers`);
+  const text = await res.text();
+  let json: Record<string, unknown>;
+  try { json = JSON.parse(text); } catch { throw new Error(`Bybit tickers bad JSON: ${text.slice(0, 100)}`); }
+  const list = ((json.result as Record<string, unknown>)?.list ?? []) as Record<string, string>[];
+  return list
+    .filter((t) => t.symbol?.endsWith('USDT'))
+    .map((t) => ({
       symbol: t.symbol,
       price: parseFloat(t.lastPrice),
       change24h: parseFloat(t.price24hPcnt) * 100,

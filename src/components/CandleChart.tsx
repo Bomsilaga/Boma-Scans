@@ -87,6 +87,8 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
   const [candles, setCandles] = useState<Candle[]>(initCandles);
   const [loading, setLoading] = useState(false);
 
+  const [tzAEST, setTzAEST] = useState(true);  // true = AEST/Melbourne, false = UTC
+
   // indicators visibility
   const [showEMA,  setShowEMA]  = useState(true);
   const [showBB,   setShowBB]   = useState(true);
@@ -359,13 +361,19 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
     ctx.fillStyle = '#44446a';
     ctx.font = '9px Inter, sans-serif';
     ctx.textAlign = 'center';
+    const tz = tzAEST ? 'Australia/Melbourne' : 'UTC';
     const labelStep = Math.max(1, Math.floor(visibleCount / 6));
     for (let i = 0; i < slice.length; i += labelStep) {
       const x = PAD_L + i * stepX + stepX / 2;
-      const d = new Date(slice[i].time);
+      const ts = slice[i].time;
       let label: string;
-      if (tf === '1d') label = `${d.getMonth() + 1}/${d.getDate()}`;
-      else label = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+      if (tf === '1d') {
+        label = new Date(ts).toLocaleDateString('en-AU', { timeZone: tz, day: '2-digit', month: '2-digit' });
+      } else {
+        const hh = new Date(ts).toLocaleString('en-AU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+        const dd = new Date(ts).toLocaleDateString('en-AU', { timeZone: tz, day: '2-digit', month: '2-digit' });
+        label = `${dd} ${hh}`;
+      }
       ctx.fillText(label, x, H - 6);
     }
 
@@ -385,7 +393,7 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
         lx += ctx.measureText(label).width + 10;
       });
     }
-  }, [candles, entry, stopLoss, tp1, tp2, tp3, vwapProp, pocVal, showEMA, showBB, showVWAP, showSR, showVol]);
+  }, [candles, entry, stopLoss, tp1, tp2, tp3, vwapProp, pocVal, showEMA, showBB, showVWAP, showSR, showVol, tzAEST]);
 
   // redraw whenever state changes
   useEffect(() => { draw(); }, [draw]);
@@ -470,7 +478,7 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
         `O ${hoverCandle.open.toFixed(dp)}   C ${hoverCandle.close.toFixed(dp)}`,
         `H ${hoverCandle.high.toFixed(dp)}   L ${hoverCandle.low.toFixed(dp)}`,
         `Vol ${hoverCandle.volume.toFixed(2)}`,
-        new Date(hoverCandle.time).toLocaleString('en-AU', { dateStyle: 'short', timeStyle: 'short' }),
+        new Date(hoverCandle.time).toLocaleString('en-AU', { timeZone: tzAEST ? 'Australia/Melbourne' : 'UTC', dateStyle: 'short', timeStyle: 'short' }),
       ];
       lines.forEach((l, li) => {
         ctx.fillStyle = li === 0 ? (isBull ? '#00d4aa' : '#ff4d6d') : '#aaaacc';
@@ -489,84 +497,105 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
     crossPos.current = null;
   }, []);
 
-  // ─── Mouse events ─────────────────────────────────────────────────────────
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const v = viewRef.current;
-    const delta = e.deltaY > 0 ? 0.85 : 1.18;
-    v.zoom = Math.min(8, Math.max(0.2, v.zoom * delta));
-    draw();
-  }, [draw]);
+  // ─── Native DOM events (must be non-passive to allow preventDefault) ─────────
+  const eventDivRef = useRef<HTMLDivElement>(null);
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    dragRef.current = { startX: e.clientX, startOffset: viewRef.current.offset };
-  }, []);
+  useEffect(() => {
+    const el = eventDivRef.current;
+    if (!el) return;
 
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    drawCrosshair(e.clientX, e.clientY);
-    if (!dragRef.current) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const { zoom } = viewRef.current;
-    const visibleCount = Math.round(80 / zoom);
-    const stepX = (canvas.offsetWidth - 76) / visibleCount;
-    const dx = e.clientX - dragRef.current.startX;
-    viewRef.current.offset = Math.max(0, Math.min(
-      candles.length - visibleCount,
-      dragRef.current.startOffset - dx / stepX,
-    ));
-    draw();
-  }, [draw, drawCrosshair, candles.length]);
-
-  const onMouseUp = useCallback(() => { dragRef.current = null; }, []);
-  const onMouseLeave = useCallback(() => { dragRef.current = null; clearCrosshair(); }, [clearCrosshair]);
-
-  // ─── Touch events ─────────────────────────────────────────────────────────
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      touchRef.current = {
-        dist: Math.hypot(dx, dy),
-        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-        offset: viewRef.current.offset,
-      };
-      dragRef.current = null;
-    } else if (e.touches.length === 1) {
-      dragRef.current = { startX: e.touches[0].clientX, startOffset: viewRef.current.offset };
-      touchRef.current = null;
-    }
-  }, []);
-
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (e.touches.length === 2 && touchRef.current) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.hypot(dx, dy);
-      const scale = dist / touchRef.current.dist;
-      viewRef.current.zoom = Math.min(8, Math.max(0.2, viewRef.current.zoom * scale));
-      touchRef.current.dist = dist;
+    // ── wheel: non-passive so preventDefault stops page scroll ──
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const v = viewRef.current;
+      const delta = e.deltaY > 0 ? 0.85 : 1.18;
+      v.zoom = Math.min(8, Math.max(0.2, v.zoom * delta));
       draw();
-    } else if (e.touches.length === 1 && dragRef.current) {
+    };
+
+    // ── mouse drag ──
+    const onMouseDown = (e: MouseEvent) => {
+      dragRef.current = { startX: e.clientX, startOffset: viewRef.current.offset };
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      drawCrosshair(e.clientX, e.clientY);
+      if (!dragRef.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
       const { zoom } = viewRef.current;
-      const visibleCount = Math.round(80 / zoom);
+      const visibleCount = Math.max(10, Math.round(80 / zoom));
       const stepX = (canvas.offsetWidth - 76) / visibleCount;
-      const dx = e.touches[0].clientX - dragRef.current.startX;
+      const dx = e.clientX - dragRef.current.startX;
       viewRef.current.offset = Math.max(0, Math.min(
         candles.length - visibleCount,
         dragRef.current.startOffset - dx / stepX,
       ));
       draw();
-    }
-  }, [draw, candles.length]);
+    };
+    const onMouseUp   = () => { dragRef.current = null; };
+    const onMouseLeave = () => { dragRef.current = null; clearCrosshair(); };
 
-  const onTouchEnd = useCallback(() => {
-    dragRef.current = null;
-    touchRef.current = null;
-  }, []);
+    // ── touch: non-passive so we can prevent default scroll ──
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchRef.current = {
+          dist: Math.hypot(dx, dy),
+          midX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+          offset: viewRef.current.offset,
+        };
+        dragRef.current = null;
+      } else if (e.touches.length === 1) {
+        dragRef.current = { startX: e.touches[0].clientX, startOffset: viewRef.current.offset };
+        touchRef.current = null;
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      if (e.touches.length === 2 && touchRef.current) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        viewRef.current.zoom = Math.min(8, Math.max(0.2, viewRef.current.zoom * (dist / touchRef.current.dist)));
+        touchRef.current.dist = dist;
+        draw();
+      } else if (e.touches.length === 1 && dragRef.current) {
+        const { zoom } = viewRef.current;
+        const visibleCount = Math.max(10, Math.round(80 / zoom));
+        const stepX = (canvas.offsetWidth - 76) / visibleCount;
+        const dx = e.touches[0].clientX - dragRef.current.startX;
+        viewRef.current.offset = Math.max(0, Math.min(
+          candles.length - visibleCount,
+          dragRef.current.startOffset - dx / stepX,
+        ));
+        draw();
+      }
+    };
+    const onTouchEnd = () => { dragRef.current = null; touchRef.current = null; };
+
+    el.addEventListener('wheel',      onWheel,      { passive: false });
+    el.addEventListener('mousedown',  onMouseDown);
+    el.addEventListener('mousemove',  onMouseMove);
+    el.addEventListener('mouseup',    onMouseUp);
+    el.addEventListener('mouseleave', onMouseLeave);
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    el.addEventListener('touchend',   onTouchEnd);
+
+    return () => {
+      el.removeEventListener('wheel',      onWheel);
+      el.removeEventListener('mousedown',  onMouseDown);
+      el.removeEventListener('mousemove',  onMouseMove);
+      el.removeEventListener('mouseup',    onMouseUp);
+      el.removeEventListener('mouseleave', onMouseLeave);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove',  onTouchMove);
+      el.removeEventListener('touchend',   onTouchEnd);
+    };
+  }, [draw, drawCrosshair, clearCrosshair, candles.length]);
 
   if (candles.length === 0 && !loading) return null;
 
@@ -621,6 +650,18 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
           ))}
         </div>
 
+        {/* Timezone toggle */}
+        <button
+          onClick={() => setTzAEST(z => !z)}
+          style={{
+            fontSize: 9, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
+            background: '#12121a', color: tzAEST ? '#ffd166' : '#7070a0',
+            border: '1px solid #2a2a3e', cursor: 'pointer',
+          }}
+        >
+          {tzAEST ? '🕐 AEST' : '🌐 UTC'}
+        </button>
+
         {/* Zoom reset */}
         <button
           onClick={() => { viewRef.current = { offset: 0, zoom: 1 }; draw(); }}
@@ -643,18 +684,8 @@ export default function CandleChart({ candles: initCandles, symbol, entry, stopL
           ref={crossRef}
           style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
-        {/* Event capture div */}
-        <div
-          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
-          onWheel={onWheel}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseLeave}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        />
+        {/* Event capture div — all listeners attached via useEffect as non-passive */}
+        <div ref={eventDivRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
       </div>
 
       {/* Legend */}

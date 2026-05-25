@@ -1,11 +1,10 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.fourscans.app',
-  appName: '4Scans',
-  // Point to the live Vercel deployment — no static export needed
+  appId: 'com.bomaintelligent.app',
+  appName: 'Boma Intelligent',
   server: {
-    url: 'https://4scans.vercel.app',
+    url: 'https://boma-intelligent.vercel.app',
     cleartext: false,
   },
   android: {

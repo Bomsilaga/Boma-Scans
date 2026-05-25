@@ -76,8 +76,8 @@ export default function Home() {
             <div className="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center text-lg">
               🛰️
             </div>
-            <span className="font-bold text-text-primary text-sm hidden sm:block">Boma Scans</span>
-            <span className="text-text-muted text-xs hidden sm:block">Elite Crypto Signal Bot</span>
+            <span className="font-bold text-text-primary text-sm hidden sm:block">Boma Intelligent</span>
+            <span className="text-text-muted text-xs hidden sm:block">AI-Enhanced Signal Engine</span>
           </div>
 
           <nav className="flex items-center gap-1 ml-auto">

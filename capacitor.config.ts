@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: '4Scans',
   // Point to the live Vercel deployment — no static export needed
   server: {
-    url: 'https://4scans-a7x9zbpeu-ipaliboboma-3927s-projects.vercel.app',
+    url: 'https://4scans.vercel.app',
     cleartext: false,
   },
   android: {

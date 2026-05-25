@@ -4,7 +4,7 @@ import { fetchAllTickers, fetchKlines } from '@/lib/bybit';
 import { runEngine } from '@/lib/signalEngine';
 import { getAllSubscriptions } from '@/lib/subscriptions';
 
-export const maxDuration = 300; // 5 min max on Vercel pro; use 60 on hobby
+export const maxDuration = 60;
 
 const MIN_VOLUME  = 1_000_000;  // lower threshold to catch more coins
 const ALERT_SCORE = 80;

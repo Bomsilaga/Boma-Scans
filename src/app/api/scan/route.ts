@@ -3,7 +3,7 @@ import { fetchAllTickers, fetchKlines } from '@/lib/bybit';
 import { runEngine } from '@/lib/signalEngine';
 import type { ScanResult } from '@/types';
 
-export const maxDuration = 60;
+
 
 const MIN_VOLUME = 5_000_000;
 const MIN_SCORE  = 55;

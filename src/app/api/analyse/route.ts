@@ -4,7 +4,7 @@ import { runEngine } from '@/lib/signalEngine';
 import { getAIAnalysis } from '@/lib/aiProvider';
 import type { AIProvider } from '@/lib/aiProvider';
 
-export const maxDuration = 60;
+
 
 export async function POST(req: NextRequest) {
   try {
